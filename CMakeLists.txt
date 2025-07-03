@@ -46,7 +46,6 @@ pico_set_program_version(pico_flexray "0.1")
 
 # no_flash means the target is to run from RAM
 # pico_set_binary_type(pico_flexray no_flash)
-# pico_set_binary_type(pico_flexray flash)
 
 
 # Generate PIO header
