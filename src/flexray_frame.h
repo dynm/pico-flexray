@@ -11,23 +11,24 @@
 #define TOTAL_FRAMES 512
 
 // FlexRay frame structure definition based on specification
-typedef struct {
+typedef struct
+{
     // Header - 40 bits total
-    bool     startup_frame_indicator;     // 1 bit
-    bool     sync_frame_indicator;        // 1 bit
-    bool     null_frame_indicator;        // 1 bit
-    bool     payload_preamble_indicator;  // 1 bit
-    bool     reserved_bit;                // 1 bit
-    uint16_t frame_id;                    // 11 bits
-    uint8_t  payload_length_words;        // 7 bits (number of 16-bit words)
-    uint16_t header_crc;                  // 11 bits
-    uint8_t  cycle_count;                 // 6 bits
+    bool startup_frame_indicator;    // 1 bit
+    bool sync_frame_indicator;       // 1 bit
+    bool null_frame_indicator;       // 1 bit
+    bool payload_preamble_indicator; // 1 bit
+    bool reserved_bit;               // 1 bit
+    uint16_t frame_id;               // 11 bits
+    uint8_t payload_length_words;    // 7 bits (number of 16-bit words)
+    uint16_t header_crc;             // 11 bits
+    uint8_t cycle_count;             // 6 bits
 
     // Payload - 0 to 254 bytes
-    uint8_t  payload[254];
+    uint8_t payload[254];
 
     // Trailer - 24 bits
-    uint32_t payload_crc;                 // 24 bits
+    uint32_t payload_crc; // 24 bits
 } flexray_frame_t;
 
 void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame);
