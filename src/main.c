@@ -13,18 +13,20 @@
 #include "hardware/pll.h"
 #include "hardware/xosc.h"
 
-#define REAL_DATA 1
-
 #include "flexray_bss_streamer.pio.h"
 #include "replay_frame.h"
 #include "flexray_frame.h"
 
+#define SRAM __attribute__((section(".data")))
+#define FLASH __attribute__((section(".rodata")))
 // --- Configuration ---
 
 // -- Mode 1: Streamer Pins --
 #define REPLAY_TX_PIN 15
-#define RXD_PIN 13
-#define DEBUG_PIN 25
+#define RXD_FROM_ECU_PIN 13
+#define TXEN_TO_VEHICLE_PIN 25
+#define RXD_FROM_VEHICLE_PIN 14
+#define TXEN_TO_ECU_PIN 16
 
 // -- Mode 2: Forwarder Pins --
 #define FR_CH1_RX 8
@@ -54,11 +56,11 @@
 // have been moved to flexray_frame.h for better modularity.
 
 // --- Global State ---
-uint dma_data_chan;
+uint dma_data_from_ecu_chan;
+uint dma_data_from_vehicle_chan;
 uint dma_rearm_chan;
 uint dma_control_chan; // New: for automatic buffer switching
 static uint32_t rearm_data;
-
 // Ping-pong buffers
 volatile uint32_t capture_buffer_a[FRAME_BUF_SIZE_WORDS] __attribute__((aligned(FRAME_BITS_TO_CAPTURE / 8)));
 volatile uint32_t capture_buffer_b[FRAME_BUF_SIZE_WORDS] __attribute__((aligned(FRAME_BITS_TO_CAPTURE / 8)));
@@ -86,39 +88,68 @@ void streamer_irq0_handler()
     g_new_data_available = true;
     irq_handler_call_count++;
 
-    uint32_t transfer_count = dma_channel_hw_addr(dma_data_chan)->transfer_count;
-    dma_channel_abort(dma_data_chan);
+    uint32_t transfer_remaining_from_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
+    uint32_t transfer_remaining_from_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
+    if (transfer_remaining_from_ecu != FRAME_BUF_SIZE_WORDS) // from ecu transferred
+    {
+        ((uint32_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_WORDS - 1] = 0x55555555;
+    }
+    if (transfer_remaining_from_vehicle != FRAME_BUF_SIZE_WORDS) // from vehicle transferred
+    {
+        ((uint32_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_WORDS - 1] = 0xAAAAAAAA;
+    }
+    dma_channel_abort(dma_data_from_ecu_chan);
+    dma_channel_abort(dma_data_from_vehicle_chan);
     current_buffer_index = 1 - current_buffer_index;
 
-    dma_channel_set_write_addr(dma_data_chan, buffer_addresses[current_buffer_index], false);
-    dma_channel_set_trans_count(dma_data_chan, FRAME_BUF_SIZE_WORDS, true);
+    dma_channel_set_write_addr(dma_data_from_ecu_chan, buffer_addresses[current_buffer_index], false);
+    dma_channel_set_write_addr(dma_data_from_vehicle_chan, buffer_addresses[current_buffer_index], false);
+    dma_channel_set_trans_count(dma_data_from_ecu_chan, FRAME_BUF_SIZE_WORDS, true);
+    dma_channel_set_trans_count(dma_data_from_vehicle_chan, FRAME_BUF_SIZE_WORDS, true);
 }
 
-void setup_stream(PIO pio, uint rx_pin, uint debug_pin)
+void setup_stream(PIO pio, 
+    uint rx_pin_from_ecu, uint tx_en_pin_to_vehicle, 
+    uint rx_pin_from_vehicle, uint tx_en_pin_to_ecu)
 {
     // --- PIO Setup ---
     uint offset = pio_add_program(pio, &flexray_bss_streamer_program);
-    uint sm = pio_claim_unused_sm(pio, true);
-    flexray_bss_streamer_program_init(pio, sm, offset, rx_pin, debug_pin);
-    dma_data_chan = dma_claim_unused_channel(true);
-    dma_channel_config dma_c = dma_channel_get_default_config(dma_data_chan);
-    channel_config_set_transfer_data_size(&dma_c, DMA_SIZE_32);
-    channel_config_set_read_increment(&dma_c, false);              // Always read from same FIFO
-    channel_config_set_write_increment(&dma_c, true);              // Write to sequential buffer locations
-    channel_config_set_dreq(&dma_c, pio_get_dreq(pio, sm, false)); // Paced by PIO RX
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
-    dma_channel_configure(dma_data_chan, &dma_c,
+    uint sm_from_ecu = pio_claim_unused_sm(pio, true);
+    uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
+    flexray_bss_streamer_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_en_pin_to_vehicle);
+    flexray_bss_streamer_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_en_pin_to_ecu);
+    dma_data_from_ecu_chan = dma_claim_unused_channel(true);
+    dma_data_from_vehicle_chan = dma_claim_unused_channel(true);
+    dma_channel_config dma_c_from_ecu = dma_channel_get_default_config(dma_data_from_ecu_chan);
+    dma_channel_config dma_c_from_vehicle = dma_channel_get_default_config(dma_data_from_vehicle_chan);
+    channel_config_set_transfer_data_size(&dma_c_from_ecu, DMA_SIZE_32);
+    channel_config_set_transfer_data_size(&dma_c_from_vehicle, DMA_SIZE_32);
+    channel_config_set_read_increment(&dma_c_from_ecu, false);              // Always read from same FIFO
+    channel_config_set_read_increment(&dma_c_from_vehicle, false);              // Always read from same FIFO
+    channel_config_set_write_increment(&dma_c_from_ecu, true);              // Write to sequential buffer locations
+    channel_config_set_write_increment(&dma_c_from_vehicle, true);              // Write to sequential buffer locations
+    channel_config_set_dreq(&dma_c_from_ecu, pio_get_dreq(pio, sm_from_ecu, false)); // Paced by PIO RX
+    channel_config_set_dreq(&dma_c_from_vehicle, pio_get_dreq(pio, sm_from_vehicle, false)); // Paced by PIO RX
+    dma_channel_configure(dma_data_from_ecu_chan, &dma_c_from_ecu,
                           capture_buffer_a, // Destination: Buffer A
-                          &pio->rxf[sm],    // Source: PIO RX FIFO
+                          &pio->rxf[sm_from_ecu],    // Source: PIO RX FIFO
                           64,               // Transfer count: 64 words (2048 bits)
                           false             // Don't start yet
     );
-
+    dma_channel_configure(dma_data_from_vehicle_chan, &dma_c_from_vehicle,
+                          capture_buffer_b, // Destination: Buffer B
+                          &pio->rxf[sm_from_vehicle],    // Source: PIO RX FIFO
+                          64,               // Transfer count: 64 words (2048 bits)
+                          false             // Don't start yet
+    );
+    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
     irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
     irq_set_enabled(pio_get_irq_num(pio, 0), true);
 
-    dma_channel_start(dma_data_chan);
-    pio_sm_set_enabled(pio, sm, true);
+    dma_channel_start(dma_data_from_ecu_chan);
+    dma_channel_start(dma_data_from_vehicle_chan);
+    pio_sm_set_enabled(pio, sm_from_ecu, true);
+    pio_sm_set_enabled(pio, sm_from_vehicle, true);
 }
 
 int main()
@@ -137,9 +168,9 @@ int main()
     printf("\n--- FlexRay Continuous Streaming Bridge (RX Mode) ---\n");
 
     uint dma_replay_chan = setup_replay(pio1, REPLAY_TX_PIN);
-    setup_stream(pio0, RXD_PIN, DEBUG_PIN);
+    setup_stream(pio0, RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
 
-    printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_PIN);
+    printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_FROM_ECU_PIN);
     printf("Waiting for %d bits (%d words) to be captured...\n", FRAME_BITS_TO_CAPTURE, FRAME_BUF_SIZE_WORDS);
 
     flexray_frame_t frame_snap[TOTAL_FRAMES] = {0};
@@ -189,24 +220,47 @@ int main()
             else
             {
                 frame_received[frame.frame_id] = false;
+                printf("Invalid frame: %d\n", frame.frame_id);
+            }
+            if (main_loop_count > 1000)
+            {
+                main_loop_count = 0;
+                // const char* from_string = "";
+                // if (temp_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0x55555555)
+                // {
+                //     from_string = FROM_ECU_STRING;
+                // }
+                // if (temp_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0xAAAAAAAA)
+                // {
+                //     from_string = FROM_VEHICLE_STRING;
+                // }
+                printf("ID,Len,HeaderCRC,Cyc,Data,PayloadCRC,SRC\n");
+                for (int i = 0; i < TOTAL_FRAMES; i++)
+                {
+                    // Only print frames that have been received and validated
+                    if (frame_received[i])
+                    {
+                        print_frame(&frame_snap[i]);
+                    }
+                }
             }
             g_new_data_available = false;
         }
         // Periodically print the collected frame data
-        if (time_reached(next_print_time))
-        {
-            next_print_time = make_timeout_time_ms(1000);
-            // printf("Main Loop Count: %d, IRQ Count: %d, Data Ready Count: %d, Diff: %d\n", main_loop_count, irq_handler_call_count, data_ready_count,  irq_handler_call_count - data_ready_count);
-            printf("ID,Len,HeaderCRC,Cyc,Data,PayloadCRC\n");
-            for (int i = 0; i < TOTAL_FRAMES; i++)
-            {
-                // Only print frames that have been received and validated
-                if (frame_received[i])
-                {
-                    print_frame(&frame_snap[i]);
-                }
-            }
-        }
+        // if (time_reached(next_print_time))
+        // {
+        //     next_print_time = make_timeout_time_ms(1000);
+        //     // printf("Main Loop Count: %d, IRQ Count: %d, Data Ready Count: %d, Diff: %d\n", main_loop_count, irq_handler_call_count, data_ready_count,  irq_handler_call_count - data_ready_count);
+        //     printf("ID,Len,HeaderCRC,Cyc,Data,PayloadCRC\n");
+        //     for (int i = 0; i < TOTAL_FRAMES; i++)
+        //     {
+        //         // Only print frames that have been received and validated
+        //         if (frame_received[i])
+        //         {
+        //             print_frame(&frame_snap[i]);
+        //         }
+        //     }
+        // }
         // For power efficiency, the CPU could wait for an interrupt here.
         // For example: __wfi();
     }

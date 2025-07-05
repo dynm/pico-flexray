@@ -10,6 +10,10 @@
 #define FRAME_BUF_SIZE_WORDS (FRAME_BITS_TO_CAPTURE / 32)
 #define TOTAL_FRAMES 512
 
+#define FROM_ECU 0
+#define FROM_VEHICLE 1
+#define FROM_UNKNOWN 0xff
+
 // FlexRay frame structure definition based on specification
 typedef struct
 {
@@ -29,6 +33,7 @@ typedef struct
 
     // Trailer - 24 bits
     uint32_t payload_crc; // 24 bits
+    uint8_t source; // 1 bit
 } flexray_frame_t;
 
 void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame);

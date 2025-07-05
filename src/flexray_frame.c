@@ -86,6 +86,11 @@ static bool check_payload_crc(flexray_frame_t *frame, const uint32_t *raw_buffer
     return calculated_crc == frame->payload_crc;
 }
 
+uint32_t payload_crc_precompute(uint32_t *override_payload, uint32_t *bit_length)
+{
+    // 
+}
+
 void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame)
 {
     int current_bit = 0;
@@ -128,16 +133,28 @@ void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame)
     {
         parsed_frame->payload_crc = 0;
     }
+    if (raw_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0x55555555)
+    {
+        parsed_frame->source = FROM_ECU;
+    }
+    else if (raw_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0xAAAAAAAA)
+    {
+        parsed_frame->source = FROM_VEHICLE;
+    }
+    else
+    {
+        parsed_frame->source = FROM_UNKNOWN;
+    }
 }
 
 void print_frame(flexray_frame_t *frame)
 {
-    printf("%d,%d,%02X,%d,", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);
+    printf("%d,%d,%02X,%d", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);
     for (int i = 0; i < frame->payload_length_words * 2; i++)
     {
         printf("%02X", frame->payload[i]);
     }
-    printf(",%02X\n", frame->payload_crc);
+    printf(",%02X,%s\n", frame->payload_crc, frame->source == FROM_ECU ? "ECU" : frame->source == FROM_VEHICLE ? "VEHICLE" : "UNKNOWN");
 }
 
 bool is_valid_frame(flexray_frame_t *frame, const uint32_t *raw_buffer)

@@ -97,22 +97,22 @@ frame_end:
 
 % c-sdk {
 
-void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint debug_pin) {
+void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_en_pin) {
     // --- GPIO Configuration: Must be done BEFORE pio_gpio_init() ---
     // Enable pull-up on the FlexRay RX pin to ensure it's high when idle.
     gpio_pull_up(rx_pin);
 
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, rx_pin);
-    pio_gpio_init(pio, debug_pin);
+    pio_gpio_init(pio, tx_en_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, debug_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
     pio_sm_config c = flexray_bss_streamer_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, rx_pin);
     sm_config_set_jmp_pin(&c, rx_pin);
-    sm_config_set_sideset_pins(&c, debug_pin);
+    sm_config_set_sideset_pins(&c, tx_en_pin);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
