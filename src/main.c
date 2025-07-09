@@ -17,6 +17,8 @@
 #include "flexray_override_pipeline.pio.h"
 #include "replay_frame.h"
 #include "flexray_frame.h"
+#include "usb_comms.h"
+#include "panda_usb.h"
 
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
@@ -170,6 +172,9 @@ int main()
 {
     // bool clock_configured = set_sys_clock_khz(100000, false);
     stdio_init_all();
+    
+    // Initialize Panda USB interface
+    panda_usb_init();
     // --- Set system clock to 100MHz (RP2350) ---
     // make PIO clock div has no fraction, reduce jitter
     // if (!clock_configured) {
@@ -200,6 +205,9 @@ int main()
     while (true)
     {
         main_loop_count++;
+        
+        // Handle Panda USB communication
+        panda_usb_task();
         // Wait for buffer index to change (indicating new data is ready)
         static uint32_t last_seen_buffer_index = 0;
         uint32_t current_seen_index = current_buffer_index;
@@ -230,6 +238,9 @@ int main()
             {
                 frame_snap[frame.frame_id] = frame;
                 frame_received[frame.frame_id] = true;
+                
+                // Send FlexRay frame as CAN data via Panda USB interface
+                panda_send_flexray_as_can(&frame);
             }
             else
             {

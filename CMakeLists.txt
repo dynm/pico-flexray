@@ -39,6 +39,9 @@ add_executable(pico_flexray
      src/main.c
      src/replay_frame.c
      src/flexray_frame.c
+     src/usb_comms.c
+     src/panda_usb.c
+     src/usb_descriptors.c
      )
 
 pico_set_program_name(pico_flexray "pico_flexray")
@@ -57,17 +60,22 @@ pico_generate_pio_header(pico_flexray
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(pico_flexray 1)
-pico_enable_stdio_usb(pico_flexray 1)
+# The panda interface is a vendor-specific USB device, not a CDC (serial) device.
+# So we don't enable stdio_usb, but we will link the tinyusb_device library directly.
+# pico_enable_stdio_usb(pico_flexray 1)
 
 # Add the standard library to the build
 target_link_libraries(pico_flexray
         hardware_spi
         hardware_gpio
-        pico_stdlib)
+        pico_stdlib
+        tinyusb_device
+        )
 
 # Add the standard include files to the build
 target_include_directories(pico_flexray PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/src
 )
 
 # Add any user requested libraries
@@ -75,6 +83,8 @@ target_link_libraries(pico_flexray
         hardware_dma
         hardware_pio
         hardware_interp
+        pico_unique_id
+        tinyusb_device
         )
 
 pico_add_extra_outputs(pico_flexray)
