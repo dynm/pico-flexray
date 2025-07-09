@@ -149,7 +149,7 @@ void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame)
 
 void print_frame(flexray_frame_t *frame)
 {
-    printf("%d,%d,%02X,%d", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);
+    printf("%d,%d,%02X,%d,", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);
     for (int i = 0; i < frame->payload_length_words * 2; i++)
     {
         printf("%02X", frame->payload[i]);
