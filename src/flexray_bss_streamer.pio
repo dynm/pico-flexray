@@ -12,7 +12,6 @@
 .define public BSS_SEARCH_TIMEOUT 31
 .define public FLUSH_COUNT 31
 
-
 .define public DATA_BITS 7       ; Loop 8 times for 8 bits.
 
 .wrap_target
@@ -25,11 +24,9 @@ idle_loop:
     jmp entry_point
 is_high:
     nop [7]
-    nop
     jmp x-- idle_loop
 
     ; --- 2. Frame Start Synchronization (TSS/FSS) ---
-    wait 1 pin 0                ; nothing, wait for stable high
     wait 0 pin 0                ; waiting for TSS low
     wait 1 pin 0   side 1       ; before FSS high detected, we are in TSS, enable TX_EN
     nop [7]                     ; consume fss high
@@ -66,8 +63,7 @@ found_edge:
     set y, DATA_BITS
 sample_byte_loop:
     in pins, 1 [7]              ; Sample bit at its center, total 10 cycles/bit.
-    nop
-    jmp y-- sample_byte_loop
+    jmp y-- sample_byte_loop [1]
 
     ; --- Byte complete. ---
     ; After sampling 8 bits (80 cycles) + the BSS '0' bit (10 cycles) + the
