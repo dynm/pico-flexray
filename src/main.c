@@ -14,6 +14,7 @@
 #include "hardware/xosc.h"
 
 #include "flexray_bss_streamer.pio.h"
+#include "flexray_override_pipeline.pio.h"
 #include "replay_frame.h"
 #include "flexray_frame.h"
 
@@ -29,13 +30,13 @@
 #define TXEN_TO_ECU_PIN 16
 
 // -- Mode 2: Forwarder Pins --
-#define FR_CH1_RX 8
-#define FR_CH1_TX 9
-#define FR_CH1_TXEN 10
+#define FR_RX_FROM_ECU_PIN 8
+#define FR_TX_TO_VEHICLE_PIN 9
+#define FR_TXEN_TO_VEHICLE_PIN 10
 
-#define FR_CH2_RX 11
-#define FR_CH2_TX 12
-#define FR_CH2_TXEN 13
+#define FR_RX_FROM_VEHICLE_PIN 11
+#define FR_TX_TO_ECU_PIN 12
+#define FR_TXEN_TO_ECU_PIN 13
 
 // -- Mode 3: Interceptor Pins --
 #define MITM_RX_PIN 8    // Receive from this pin
@@ -152,6 +153,19 @@ void setup_stream(PIO pio,
     pio_sm_set_enabled(pio, sm_from_vehicle, true);
 }
 
+void setup_forwarder(PIO pio,
+    uint rx_pin_from_ecu, uint tx_pin_to_vehicle, uint tx_en_pin_to_vehicle,
+    uint rx_pin_from_vehicle, uint tx_pin_to_ecu, uint tx_en_pin_to_ecu)
+{
+    bool loopback_mode = true;
+    uint offset = pio_add_program(pio, &flexray_forwarder_program);
+    uint sm_from_ecu = pio_claim_unused_sm(pio, true);
+    uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
+    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle, tx_en_pin_to_vehicle, loopback_mode);
+    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu, tx_en_pin_to_ecu, loopback_mode);
+
+}
+
 int main()
 {
     // bool clock_configured = set_sys_clock_khz(100000, false);
@@ -168,8 +182,8 @@ int main()
     printf("\n--- FlexRay Continuous Streaming Bridge (RX Mode) ---\n");
 
     uint dma_replay_chan = setup_replay(pio1, REPLAY_TX_PIN);
-    setup_stream(pio0, RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
-
+    setup_stream(pio0, RXD_FROM_ECU_PIN, FR_TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
+    setup_forwarder(pio1, REPLAY_TX_PIN, FR_TX_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN, FR_RX_FROM_VEHICLE_PIN, FR_TX_TO_ECU_PIN, FR_TXEN_TO_ECU_PIN);
     printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_FROM_ECU_PIN);
     printf("Waiting for %d bits (%d words) to be captured...\n", FRAME_BITS_TO_CAPTURE, FRAME_BUF_SIZE_WORDS);
 

@@ -1,0 +1,204 @@
+; This PIO file contains two programs that work together as a pipeline to
+; implement a flexible "on-the-fly" FlexRay frame interceptor.
+;
+; This implementation is designed based on a two-channel requirement, where
+; each channel has a "sniffer" and a "muxer". This file provides the two
+; generic PIO programs. The main C code should instantiate two of each,
+; configuring the GPIOs appropriately for each channel.
+;
+; It uses IRQ for reliable synchronization between the sniffer and the muxer,
+; and adopts a 10-cycle-per-bit timing model, assuming a 100MHz system clock
+; for 10Mbit/s FlexRay communication.
+
+; 40 bit Header
+; TSS = Low for 5-15 bit, FSS = 01,BSS = 10
+; 10xxxxxFRA
+; 10MEIDIDID
+
+; --- Program 1: The FrameID Matcher/Decoder ---
+; This program listens to a FlexRay bus, waits for a valid frame, decodes
+; its Frame ID, and compares it to a target ID pre-loaded by the CPU.
+; It signals its decision on a dedicated output pin for the muxer to read,
+; and uses an IRQ to synchronize the start of the process with the muxer.
+; .program flexray_frameid_matcher
+; .define public IDLE_EOP_COUNT 20
+; ; OVERRIDE_ENABLE output pin. 
+; ; RX input pin.
+; .wrap_target
+; entry_point:
+;     set pindirs, 1          ; Set the decision pin to be an output.
+;     set pins, 0             ; Drive decision pin LOW (default = no match).
+
+; wait_for_idle:
+;     ; Wait for the bus to be idle for 300 cycles (30 checks * 10 cycles).
+;     ; This ensures we don't start listening mid-frame.
+;     set x, 29
+; idle_loop:
+;     jmp pin, is_high [4]    ; If pin is high, continue. Takes 5 cycles.
+;     jmp entry_point [4]     ; If pin is low, not idle. Restart check. Takes 5 cycles.
+; is_high:
+;     jmp x-- idle_loop [4]   ; Pin is high, continue countdown. Takes 5 cycles.
+;                             ; Loop finishes when x is 0, indicating 300 cycles of high.
+    
+;     ; Idle period detected. Now, wait for the TSS -> FSS transition.
+;     wait 0 pin 0            ; Wait for the bus to go low (start of TSS).
+;     wait 1 pin 0            ; Wait for the bus to go high (start of FSS).
+    
+;     ; FSS detected. This is our master synchronization point.
+;     irq set 0               ; Trigger IRQ 0 to wake up the Muxer.
+;     set pins, 0             ; Ensure decision pin is low at the start of the frame.
+
+;     ; We are at the very start of the FSS '1' bit. A FlexRay bit is 10 cycles.
+;     ; The 'wait 1' instruction took 1 cycle. We wait 9 more to complete the bit.
+;     nop [8]                 ; 8+1=9 cycles.
+
+;     ; Skip over the BSS (Byte Start Sequence), which is one '0' bit.
+;     nop [9]                 ; 10 cycles.
+
+;     ; Skip over the 5 header bits that precede the Frame ID.
+;     ; (5 bits * 10 cycles/bit = 50 cycles).
+;     set x, 4                ; Loop 5 times (x=4 down to 0).
+; skip_header_bits:
+;     nop [9]
+;     jmp x-- skip_header_bits
+
+;     ; Read the 11-bit Frame ID. We sample in the middle of each 10-cycle bit window.
+;     ; (11 bits * 10 cycles/bit = 110 cycles).
+;     set x, 10               ; Loop 11 times.
+; read_id_loop:
+;     nop [3]                 ; 4 cycles delay.
+;     in pins, 1              ; 1 cycle to sample at bit-center (cycle 5).
+;     nop [4]                 ; 5 cycles to wait for the rest of the bit.
+;     jmp x-- read_id_loop
+
+;     ; The 11-bit ID is now in the ISR. Compare it with the target ID from the Y register.
+;     mov x, y                ; Copy target ID from Y to X.
+;     jmp x!=is, mismatch     ; If X (target) != ISR (actual), it's not a match.
+
+; ; --- Match Success ---
+;     set pins, 1             ; ID Matched! Set the decision pin HIGH.
+;     jmp rest_of_frame
+
+; mismatch:
+;     nop                     ; ID did not match. Decision pin remains LOW.
+
+; rest_of_frame:
+;     ; The decision is locked in. Now detect End-Of-Frame by looking for 20 idle bits.
+;     set x, IDLE_EOP_COUNT
+; eop_loop:
+;     nop [3]                 ; 4 cycles to align to center of bit window.
+;     jmp pin, high_in_eop    ; 1 cycle to check pin state.
+;     ; Path for a LOW bit:
+;     set x, IDLE_EOP_COUNT  ; 1 cycle to reset the idle counter.
+;     nop [3]                 ; 4 cycles of delay. Total path = 4+1+1+4 = 10 cycles.
+;     jmp eop_loop
+; high_in_eop:
+;     ; Path for a HIGH bit:
+;     nop [4]                 ; 5 cycles of delay. Total path = 4+1+5 = 10 cycles.
+;     jmp x-- eop_loop
+;     ; jmp fails if x becomes 0, meaning 20 high bits were seen. EOP found.
+;     jmp entry_point         ; Restart the entire process for the new frame.
+; .wrap
+
+
+; --- Program 2: The Forwarder ---
+; This program forwards FlexRay RX to TX with override capability.
+; Design: Detect genuine idle period (10 bits HIGH) → wait for TSS falling edge
+; Avoids blind wait triggers that could match data stream edges
+; TSS = LOW for 5-15 bits, FSS = rising edge + 1 bit HIGH  
+; BSS = 1 bit HIGH + 1 bit LOW (10 pattern)
+;
+; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
+.program flexray_forwarder
+; Pin assignments (set by C code):
+; - RX input pin (pin 0 in this program)
+; - TX output pin (out pins)
+;
+; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
+
+.define public BUS_IDLE_BIT_COUNT 19
+.side_set 1 opt
+.wrap_target
+entry_point:
+
+; --- 1. Wait for bus to become idle ---
+; find consecutive 20 high bits. do not require edge alignment now.
+wait_for_idle_loop:
+    nop [3]        side 0              ; 4 cycles to sample mid-bit
+    jmp pin, high_in_idle              ; 1 cycle to check pin
+    ; Path for LOW bit (bus is active):
+    set y, BUS_IDLE_BIT_COUNT [3]  ; 4 cycle to reset counter side 0
+    jmp wait_for_idle_loop             ; 1 cycle to jump back to the start of the loop
+high_in_idle:
+    ; Path for HIGH bit:
+    nop [3]                         ; 4 cycles of delay. Total high path = 4+1+4 = 9.
+    jmp y-- wait_for_idle_loop      ; 1 cycle to decrement counter. Total = 9+1=10.
+    ; Fall through when y becomes 0, meaning bus is idle.
+
+; --- 2. Frame Start Synchronization (TSS/FSS) ---
+; all signal are shifted by +4 cycles to make center of bit window.
+; use wait to align edge.
+sync_point:
+    wait 0 pin 0       [4]      ; 4. Wait for the TSS falling edge.
+    mov pins, null side 1       ; 1. NOW enable TX_EN and drive TX pin LOW.
+    wait 1 pin 0       [4]      ; 4. Wait for the FSS rising edge. This is our sync point.
+    mov pins, ~null             ; 5. Send FSS rising edge.
+    ; Initialize both counters for consecutive bit detection
+    set x, BUS_IDLE_BIT_COUNT [2]; 8. Initialize LOW counter.
+    set y, BUS_IDLE_BIT_COUNT [1]; 10. Initialize HIGH counter.
+
+; --- 3. Main Bit Processing Loop ---
+; Each path through this loop is exactly 10 cycles.
+bit_loop:
+    nop [2]                     ; 13. Delay.
+    jmp !osre, override_bit     ; 14. Branch on FIFO state.
+    
+forward_bit:
+    mov pins, pins              ; 15. Forward pin state directly and delay. 5th cycle
+    ; now we have 16-22 cycle to prepare osr.
+    jmp pin, forward_high       ; 16. Check RX pin for idle counter.
+forward_low:
+    set y, BUS_IDLE_BIT_COUNT ; 17. Reset HIGH idle counter.
+    jmp x-- bit_loop [2]        ; 20. Decrement LOW counter.
+    jmp entry_point             ; 1. 20 consecutive LOWs detected. Go to entry point.
+forward_high:
+    set x, BUS_IDLE_BIT_COUNT ; 17. Reset LOW idle counter.
+    jmp y-- bit_loop [2]        ; 20. Decrement HIGH counter.
+    jmp entry_point             ; 1. 20 consecutive HIGHs detected. Go to entry point.
+
+override_bit:
+    out pins, 1                 ; 15. Output from FIFO and delay.
+    jmp bit_loop     [4]        ; 20. Go to check if override is needed.
+.wrap
+
+% c-sdk {
+
+void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin, uint tx_en_pin, bool loopback_mode) {
+    // --- GPIO Configuration: Must be done BEFORE pio_gpio_init() ---
+    // Enable pull-up on the FlexRay RX pin to ensure it's high when idle.
+    if (!loopback_mode) {
+        gpio_pull_up(rx_pin);
+        pio_gpio_init(pio, rx_pin);
+        pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
+    }
+
+    // Now, let PIO take control of the pins.
+    pio_gpio_init(pio, tx_pin);
+    pio_gpio_init(pio, tx_en_pin);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
+    pio_sm_config c = flexray_forwarder_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, rx_pin);
+    sm_config_set_jmp_pin(&c, rx_pin);
+    sm_config_set_sideset_pins(&c, tx_en_pin);
+    sm_config_set_out_pins(&c, tx_pin, 1);
+    // oversample by 10, 10MHz flexray bit rate, 100MHz clock
+    float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
+    sm_config_set_clkdiv(&c, div);
+    sm_config_set_in_shift(&c, false, true, 32); // BSS is MSB first, Shift left, autopush
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

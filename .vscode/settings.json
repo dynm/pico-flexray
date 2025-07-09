@@ -42,6 +42,7 @@
         "flexray_replay_q8_frame.pio.h": "c",
         "irq.h": "c",
         "replay_frame.h": "c",
-        "flexray_frame.h": "c"
+        "flexray_frame.h": "c",
+        "xosc.h": "c"
     }
 }
