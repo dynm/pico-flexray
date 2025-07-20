@@ -32,8 +32,13 @@ extern "C" {
 
 // Vendor class for Panda protocol
 #define CFG_TUD_VENDOR            1
-#define CFG_TUD_VENDOR_RX_BUFSIZE 512
-#define CFG_TUD_VENDOR_TX_BUFSIZE 512
+#define CFG_TUD_VENDOR_RX_BUFSIZE 1024
+#define CFG_TUD_VENDOR_TX_BUFSIZE 1024
+
+// Enable debug for troubleshooting (only if not already defined)
+#ifndef CFG_TUSB_DEBUG
+#define CFG_TUSB_DEBUG            1
+#endif
 
 // Disable other classes
 #define CFG_TUD_CDC               0

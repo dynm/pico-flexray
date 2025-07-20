@@ -147,6 +147,92 @@ void parse_frame(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame)
     }
 }
 
+void parse_frame_fast(const uint32_t *raw_buffer, flexray_frame_t *parsed_frame)
+{
+    // Cast raw buffer to bitfield union for direct access
+    const flexray_raw_frame_t *raw_frame = (const flexray_raw_frame_t *)raw_buffer;
+    
+    // Extract header fields directly from bitfields
+    parsed_frame->reserved_bit = raw_frame->fields.reserved_bit;
+    parsed_frame->payload_preamble_indicator = raw_frame->fields.payload_preamble_indicator;
+    parsed_frame->null_frame_indicator = raw_frame->fields.null_frame_indicator;
+    parsed_frame->sync_frame_indicator = raw_frame->fields.sync_frame_indicator;
+    parsed_frame->startup_frame_indicator = raw_frame->fields.startup_frame_indicator;
+    parsed_frame->frame_id = raw_frame->fields.frame_id;
+    parsed_frame->payload_length_words = raw_frame->fields.payload_length_words;
+    
+    // Reconstruct 11-bit header CRC from split fields
+    // header_crc_low contains bits 23-31 (9 bits, the first part)
+    // header_crc_high contains bits 32-33 (2 bits, the second part)
+    // Correct reconstruction: (first_part << 2) | second_part
+    parsed_frame->header_crc = (raw_frame->fields.header_crc_low << 2) | 
+                              raw_frame->fields.header_crc_high;
+    
+    parsed_frame->cycle_count = raw_frame->fields.cycle_count;
+    
+    // Extract payload
+    size_t payload_size_bytes = parsed_frame->payload_length_words * 2;
+    if (payload_size_bytes > sizeof(parsed_frame->payload))
+    {
+        payload_size_bytes = sizeof(parsed_frame->payload);
+    }
+
+    memset(parsed_frame->payload, 0x00, sizeof(parsed_frame->payload));
+    uint8_t *payload_ptr = parsed_frame->payload;
+    const uint8_t *buffer_bytes = (const uint8_t *)raw_buffer;
+    size_t bytes_copied = 0;
+
+    // The header is 40 bits (5 bytes). The payload starts at the 6th byte of the raw buffer.
+    // The first 3 payload bytes come from raw_buffer[1].
+    // raw_buffer[1] bytes (LE): [b0, b1, b2, b3] -> MSB is b3 (header)
+    // payload[0] = b2, payload[1] = b1, payload[2] = b0
+    if (bytes_copied < payload_size_bytes) {
+        payload_ptr[bytes_copied++] = buffer_bytes[6]; // byte 2 of raw_buffer[1]
+        payload_ptr[bytes_copied++] = buffer_bytes[5]; // byte 1 of raw_buffer[1]
+    }
+
+    if (bytes_copied < payload_size_bytes) {
+        payload_ptr[bytes_copied++] = buffer_bytes[4]; // byte 0 of raw_buffer[1]
+    }
+
+    // Remaining payload comes from raw_buffer[2] onwards.
+    // Each 32-bit word needs to be byte-swapped.
+    for (size_t i = 2; bytes_copied < payload_size_bytes; i++) {
+        uint32_t bswapped_word = __builtin_bswap32(raw_buffer[i]);
+        size_t bytes_to_copy = 4;
+        if (bytes_copied + bytes_to_copy > payload_size_bytes) {
+            bytes_to_copy = payload_size_bytes - bytes_copied;
+        }
+        memcpy(payload_ptr + bytes_copied, &bswapped_word, bytes_to_copy);
+        bytes_copied += bytes_to_copy;
+    }
+
+    // Extract payload CRC (starts after payload)
+    int payload_crc_bit = 40 + (parsed_frame->payload_length_words * 2 * 8);
+    if ((payload_crc_bit + 24) <= (FRAME_BUF_SIZE_WORDS * 32))
+    {
+        parsed_frame->payload_crc = get_bits_msb(raw_buffer, payload_crc_bit, 24);
+    }
+    else
+    {
+        parsed_frame->payload_crc = 0;
+    }
+    
+    // Determine source
+    if (raw_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0x55555555)
+    {
+        parsed_frame->source = FROM_ECU;
+    }
+    else if (raw_buffer[FRAME_BUF_SIZE_WORDS - 1] == 0xAAAAAAAA)
+    {
+        parsed_frame->source = FROM_VEHICLE;
+    }
+    else
+    {
+        parsed_frame->source = FROM_UNKNOWN;
+    }
+}
+
 void print_frame(flexray_frame_t *frame)
 {
     printf("%d,%d,%02X,%d,", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);
@@ -161,7 +247,7 @@ bool is_valid_frame(flexray_frame_t *frame, const uint32_t *raw_buffer)
 {
     if (!frame)
         return false;
-    if (frame->frame_id >= TOTAL_FRAMES)
+    if (frame->frame_id >= 2048)
         return false;
 
     if (frame->payload_length_words > 127)

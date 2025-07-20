@@ -2,9 +2,9 @@
 ; and raises an interrupt after each one, without ever stopping.
 
 .program flexray_bss_streamer
-.side_set 1 opt ; Side-set pin 0 is used to control the transmitter enable (TX_EN)
+; .side_set 1 opt ; Side-set pin 0 is used to control the transmitter enable (TX_EN)
 
-.define public IDLE_COUNT 19     ; For 20 * 10 = 200 cycle initial idle check.
+.define public IDLE_COUNT 10     ; For 11 * 10 = 110 cycle initial idle check.
 ; Set timeout counter to 31 (max value for a 5-bit immediate).
 ; This allows for 32 iterations of the 2-cycle polling loop, giving a
 ; timeout of 64 PIO cycles (~6.4 FlexRay bit times). This is ample
@@ -19,19 +19,26 @@ entry_point:
     ; mov isr, null
     set x, IDLE_COUNT
     ; --- 1. Initial Bus Idle Check ---
+    ; this loop does not need to be aligned to the center of the bit window.
+    ; it only detects 11 bits high, the wait will catch the edge.
 idle_loop:
-    jmp pin is_high
+    jmp pin is_high [8]
     jmp entry_point
 is_high:
-    nop [7]
     jmp x-- idle_loop
+    ; idle: 11bit
+    ; tss: 5-15bit high
+    ; fss: 1bit high
+    ; bss: 1 high 1 low
+    ;      idle   tss        fbss
+    ; ¯¯¯¯¯¯¯¯¯¯¯|__________|¯¯|_|¯|_
 
     ; --- 2. Frame Start Synchronization (TSS/FSS) ---
     wait 0 pin 0                ; waiting for TSS low
-    wait 1 pin 0   side 1       ; before FSS high detected, we are in TSS, enable TX_EN
-    nop [7]                     ; consume fss high
-    nop [1]
+    wait 1 pin 0                ; before FSS high detected, we are in TSS
+    nop [9]                     ; consume fss high
     ; --- 3. Entry point for finding any BSS (first or subsequent) ---
+    ; avoid stall by low pin.
 find_bss_entry_point:
     ; Prime the timeout counter for the high-speed search.
     set x, BSS_SEARCH_TIMEOUT   ; 1 cycle for BSS high
@@ -56,8 +63,7 @@ found_edge:
     ; To sample in the center of the NEXT data bit (1.5 bits = 15 cycles away),
     ; we need to wait 15 - 2 = 13 cycles.
     ; 1st or 2nd of the over-sampled low state for BSS
-    nop [7]                    ; Wait 13 cycles.
-    nop [4]
+    nop [12]                    ; Wait 13 cycles.
 
     ; --- 5. Synchronized 8-Bit Byte Sample ---
     set y, DATA_BITS
@@ -80,7 +86,7 @@ flush_isr:
     ; --- 6. ISR Flush Routine ---
     ; The ISR contains the last partial word. We shift in 32 zeros to
     ; force a final autopush, ensuring all valid data is sent.
-    set y, FLUSH_COUNT  side 0  ; Loop 32 times. Yield bus by TX_EN=0
+    set y, FLUSH_COUNT          ; Loop 32 times. Yield bus by TX_EN=0
                                 ; It's ok to side set at here, we have 10x oversampling.
 flush_loop:
     in null, 1                  ; 1 cycle: Shift a '0' into the MSB of the ISR.
@@ -100,15 +106,15 @@ void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pi
 
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, rx_pin);
-    pio_gpio_init(pio, tx_en_pin);
+    ; pio_gpio_init(pio, tx_en_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
+    ; pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
     pio_sm_config c = flexray_bss_streamer_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, rx_pin);
     sm_config_set_jmp_pin(&c, rx_pin);
-    sm_config_set_sideset_pins(&c, tx_en_pin);
+    ; sm_config_set_sideset_pins(&c, tx_en_pin);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);

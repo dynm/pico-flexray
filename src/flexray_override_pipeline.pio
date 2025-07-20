@@ -116,7 +116,7 @@
 ;
 ; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
 
-.define public BUS_IDLE_BIT_COUNT 19
+.define public BUS_IDLE_BIT_COUNT 10 ; idle 11 bit
 .side_set 1 opt
 .wrap_target
 entry_point:

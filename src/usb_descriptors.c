@@ -3,7 +3,7 @@
 #include <string.h>
 
 // Panda USB VID/PID
-#define PANDA_VID 0xbbaa
+#define PANDA_VID 0x3801
 #define PANDA_PID 0xddcc
 
 #define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)

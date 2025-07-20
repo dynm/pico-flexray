@@ -39,9 +39,10 @@ add_executable(pico_flexray
      src/main.c
      src/replay_frame.c
      src/flexray_frame.c
-     src/usb_comms.c
      src/panda_usb.c
      src/usb_descriptors.c
+     src/flexray_bss_streamer.c
+     src/flexray_fifo.c
      )
 
 pico_set_program_name(pico_flexray "pico_flexray")
