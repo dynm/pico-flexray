@@ -27,6 +27,7 @@
 // -- Mode 1: Streamer Pins --
 #define REPLAY_TX_PIN 15
 #define RXD_FROM_ECU_PIN 13
+#define STBN_ECU_PIN 12
 #define TXEN_TO_VEHICLE_PIN 25
 #define RXD_FROM_VEHICLE_PIN 14
 #define TXEN_TO_ECU_PIN 16
@@ -95,12 +96,16 @@ int main()
     printf("\n--- FlexRay Continuous Streaming Bridge (RX Mode) ---\n");
 
     uint dma_replay_chan = setup_replay(pio1, REPLAY_TX_PIN);
+    gpio_init(STBN_ECU_PIN);
+    gpio_set_dir(STBN_ECU_PIN, GPIO_OUT);
+    gpio_put(STBN_ECU_PIN, 1);
+
     setup_stream(pio0, RXD_FROM_ECU_PIN, FR_TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
     // setup_forwarder(pio1, REPLAY_TX_PIN, FR_TX_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN, FR_RX_FROM_VEHICLE_PIN, FR_TX_TO_ECU_PIN, FR_TXEN_TO_ECU_PIN);
     printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_FROM_ECU_PIN);
     printf("Waiting for %d bits (%d words) to be captured...\n", FRAME_BITS_TO_CAPTURE, FRAME_BUF_SIZE_WORDS);
 
-    uint32_t temp_buffer[FRAME_BUF_SIZE_WORDS];
+    uint8_t temp_buffer[FRAME_BUF_SIZE_BYTES];
     uint32_t main_loop_count = 0;
     uint32_t data_ready_count = 0;
     uint32_t irq_count_prev = 0;
@@ -134,7 +139,7 @@ int main()
             }
             
             // Print FIFO statistics periodically
-            panda_print_fifo_stats();
+            // panda_print_fifo_stats();
         }
         
         // Wait for buffer index to change (indicating new data is ready)
@@ -155,12 +160,13 @@ int main()
             data_ready_count++;
             // Copy the completed buffer (the one that's NOT currently being written to)
             uint32_t completed_buffer_index = 1 - current_seen_index;
-            memcpy(temp_buffer, (const void *)buffer_addresses[completed_buffer_index], FRAME_BUF_SIZE_WORDS * sizeof(uint32_t));
+            memcpy(temp_buffer, (const void *)buffer_addresses[completed_buffer_index], FRAME_BUF_SIZE_BYTES);
 
             // Parse the frame from the copied data with hardware clock measurement
             flexray_frame_t frame;
             // parse_frame(temp_buffer, &frame);
-            parse_frame_fast(temp_buffer, &frame);
+            // parse_frame_fast(temp_buffer, &frame);
+            parse_frame(temp_buffer, &frame);
 
             // Store the latest version of the frame in a snapshot array if it's valid
             // short circuit the check if the frame_id is received
