@@ -11,8 +11,8 @@ extern uint dma_data_from_vehicle_chan;
 
 // Ping-pong buffers
 // These are defined in flexray_bss_streamer.c
-extern volatile uint32_t capture_buffer_a[];
-extern volatile uint32_t capture_buffer_b[];
+extern volatile uint8_t capture_buffer_a[];
+extern volatile uint8_t capture_buffer_b[];
 
 // Address table for automatic buffer switching
 extern volatile void *buffer_addresses[2];

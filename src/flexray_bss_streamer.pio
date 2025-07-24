@@ -10,7 +10,7 @@
 ; timeout of 64 PIO cycles (~6.4 FlexRay bit times). This is ample
 ; time to find a BSS and a robust threshold for detecting EOP.
 .define public BSS_SEARCH_TIMEOUT 31
-.define public FLUSH_COUNT 31
+.define public FLUSH_COUNT 7
 
 .define public DATA_BITS 7       ; Loop 8 times for 8 bits.
 
@@ -119,7 +119,7 @@ void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pi
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
     sm_config_set_clkdiv(&c, div);
-    sm_config_set_in_shift(&c, false, true, 32); // BSS is MSB first, Shift left, autopush
+    sm_config_set_in_shift(&c, false, true, 8); // BSS is MSB first, Shift left, autopush
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
 }
