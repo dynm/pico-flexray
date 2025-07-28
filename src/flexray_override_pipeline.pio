@@ -116,59 +116,22 @@
 ;
 ; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
 
-.define public BUS_IDLE_BIT_COUNT 10 ; idle 11 bit
-.side_set 1 opt
+; .define public BUS_IDLE_BIT_COUNT 10 ; idle 11 bit
+; .side_set 1 opt
 .wrap_target
 entry_point:
-
-; --- 1. Wait for bus to become idle ---
-; find consecutive 20 high bits. do not require edge alignment now.
-wait_for_idle_loop:
-    nop [3]        side 0              ; 4 cycles to sample mid-bit
-    jmp pin, high_in_idle              ; 1 cycle to check pin
-    ; Path for LOW bit (bus is active):
-    set y, BUS_IDLE_BIT_COUNT [3]  ; 4 cycle to reset counter side 0
-    jmp wait_for_idle_loop             ; 1 cycle to jump back to the start of the loop
-high_in_idle:
-    ; Path for HIGH bit:
-    nop [3]                         ; 4 cycles of delay. Total high path = 4+1+4 = 9.
-    jmp y-- wait_for_idle_loop      ; 1 cycle to decrement counter. Total = 9+1=10.
-    ; Fall through when y becomes 0, meaning bus is idle.
-
-; --- 2. Frame Start Synchronization (TSS/FSS) ---
-; all signal are shifted by +4 cycles to make center of bit window.
-; use wait to align edge.
-sync_point:
-    wait 0 pin 0       [4]      ; 4. Wait for the TSS falling edge.
-    mov pins, null side 1       ; 1. NOW enable TX_EN and drive TX pin LOW.
-    wait 1 pin 0       [4]      ; 4. Wait for the FSS rising edge. This is our sync point.
-    mov pins, ~null             ; 5. Send FSS rising edge.
-    ; Initialize both counters for consecutive bit detection
-    set x, BUS_IDLE_BIT_COUNT [2]; 8. Initialize LOW counter.
-    set y, BUS_IDLE_BIT_COUNT [1]; 10. Initialize HIGH counter.
-
-; --- 3. Main Bit Processing Loop ---
-; Each path through this loop is exactly 10 cycles.
-bit_loop:
-    nop [2]                     ; 13. Delay.
-    jmp !osre, override_bit     ; 14. Branch on FIFO state.
-    
-forward_bit:
-    mov pins, pins              ; 15. Forward pin state directly and delay. 5th cycle
-    ; now we have 16-22 cycle to prepare osr.
-    jmp pin, forward_high       ; 16. Check RX pin for idle counter.
-forward_low:
-    set y, BUS_IDLE_BIT_COUNT ; 17. Reset HIGH idle counter.
-    jmp x-- bit_loop [2]        ; 20. Decrement LOW counter.
-    jmp entry_point             ; 1. 20 consecutive LOWs detected. Go to entry point.
-forward_high:
-    set x, BUS_IDLE_BIT_COUNT ; 17. Reset LOW idle counter.
-    jmp y-- bit_loop [2]        ; 20. Decrement HIGH counter.
-    jmp entry_point             ; 1. 20 consecutive HIGHs detected. Go to entry point.
-
-override_bit:
-    out pins, 1                 ; 15. Output from FIFO and delay.
-    jmp bit_loop     [4]        ; 20. Go to check if override is needed.
+    jmp pin, inject_loop
+forward_loop:
+    mov osr, null
+    mov pins, pins
+    jmp entry_point
+inject_loop:
+    set pins, 1
+    set pins, 0
+    set x, 7
+out_1_byte:
+    out pins, 1
+    jmp x-- out_1_byte    
 .wrap
 
 % c-sdk {
