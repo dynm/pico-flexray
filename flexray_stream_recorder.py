@@ -13,7 +13,7 @@ PANDA_PID = 0xddcc
 # 目标端点
 TARGET_ENDPOINT = 0x81
 
-format_string = "?????xHBxHB254sxIBxxx"
+format_string = "?????xHBxHB64sxIBxxx"
 struct_size = struct.calcsize(format_string)
 
 def calculate_flexray_header_crc(frame):

@@ -122,7 +122,7 @@ bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame)
 
     // Byte 2: Payload Length and Header CRC MSB
     parsed_frame->payload_length_words = (header[2] >> 1) & 0x7F; // 7 bits
-    if (parsed_frame->payload_length_words > 127) {
+    if (parsed_frame->payload_length_words * 2 > MAX_FRAME_PAYLOAD_BYTES) {
         return false;
     }
 

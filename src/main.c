@@ -75,6 +75,21 @@ void setup_forwarder(PIO pio,
 
 }
 
+void print_flexray_frame_layout() {
+    printf("--- flexray_frame_t layout ---\n");
+    printf("sizeof(flexray_frame_t) = %zu bytes\n\n", sizeof(flexray_frame_t));
+
+    printf("offsetof(reserved_bit)              = %zu\n", offsetof(flexray_frame_t, reserved_bit));
+    printf("offsetof(frame_id)                  = %zu\n", offsetof(flexray_frame_t, frame_id));
+    printf("offsetof(payload_length_words)      = %zu\n", offsetof(flexray_frame_t, payload_length_words));
+    printf("offsetof(header_crc)                = %zu\n", offsetof(flexray_frame_t, header_crc));
+    printf("offsetof(cycle_count)               = %zu\n", offsetof(flexray_frame_t, cycle_count));
+    printf("offsetof(payload)                   = %zu\n", offsetof(flexray_frame_t, payload));
+    printf("offsetof(payload_crc)               = %zu\n", offsetof(flexray_frame_t, payload_crc));
+    printf("offsetof(source)                    = %zu\n", offsetof(flexray_frame_t, source));
+    printf("--------------------------------\n");
+}
+
 int main()
 {
     // bool clock_configured = set_sys_clock_khz(100000, false);
@@ -90,7 +105,7 @@ int main()
     //     printf("System clock set to 100MHz\n");
     // }
 
-    printf("FRAME_BUF_SIZE_WORDS: %u, flexray_frame_t size: %u\n", FRAME_BUF_SIZE_WORDS, sizeof(flexray_frame_t));
+    print_flexray_frame_layout();
 
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
     printf("\n--- FlexRay Continuous Streaming Bridge (RX Mode) ---\n");
@@ -103,7 +118,6 @@ int main()
     setup_stream(pio0, RXD_FROM_ECU_PIN, FR_TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
     // setup_forwarder(pio1, REPLAY_TX_PIN, FR_TX_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN, FR_RX_FROM_VEHICLE_PIN, FR_TX_TO_ECU_PIN, FR_TXEN_TO_ECU_PIN);
     printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_FROM_ECU_PIN);
-    printf("Waiting for %d bits (%d words) to be captured...\n", FRAME_BITS_TO_CAPTURE, FRAME_BUF_SIZE_WORDS);
 
     uint8_t temp_buffer[FRAME_BUF_SIZE_BYTES];
     uint32_t main_loop_count = 0;
@@ -112,8 +126,6 @@ int main()
     absolute_time_t next_print_time = make_timeout_time_ms(1000);
     absolute_time_t next_usb_health_check = make_timeout_time_ms(5000); // Check USB health every 5 seconds
     
-    printf("!!! FLEXRAY_FRAME_T_SIZE_IS: %u !!!\n", sizeof(flexray_frame_t));
-
     while (true)
     {
         main_loop_count++;

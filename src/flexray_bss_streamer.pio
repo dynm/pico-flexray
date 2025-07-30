@@ -71,15 +71,15 @@ void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pi
 
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, rx_pin);
-    ; pio_gpio_init(pio, tx_en_pin);
+    pio_gpio_init(pio, tx_en_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
-    ; pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
     pio_sm_config c = flexray_bss_streamer_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, rx_pin);
     sm_config_set_jmp_pin(&c, rx_pin);
-    ; sm_config_set_sideset_pins(&c, tx_en_pin);
+    sm_config_set_sideset_pins(&c, tx_en_pin);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);

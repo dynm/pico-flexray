@@ -7,10 +7,8 @@
 
 #define FLEXRAY_FIFO_SIZE 32
 
-// #define FRAME_BITS_TO_CAPTURE 2112
-#define FRAME_BITS_TO_CAPTURE 2048
-#define FRAME_BUF_SIZE_BYTES 262
-#define FRAME_BUF_SIZE_WORDS (FRAME_BITS_TO_CAPTURE / 32) * 2
+#define MAX_FRAME_PAYLOAD_BYTES 64
+#define FRAME_BUF_SIZE_BYTES 8+MAX_FRAME_PAYLOAD_BYTES
 
 #define FROM_ECU 0
 #define FROM_VEHICLE 1
@@ -30,8 +28,8 @@ typedef struct
     uint16_t header_crc;                // 11 bits
     uint8_t cycle_count;                // 6 bits
 
-    // Payload - 0 to 254 bytes
-    uint8_t payload[254];
+    // Payload - 0 to MAX_FRAME_PAYLOAD_BYTES bytes
+    uint8_t payload[MAX_FRAME_PAYLOAD_BYTES];
 
     // Trailer - 24 bits
     uint32_t payload_crc; // 24 bits
