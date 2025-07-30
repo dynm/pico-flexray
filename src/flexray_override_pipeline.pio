@@ -20,85 +20,51 @@
 ; its Frame ID, and compares it to a target ID pre-loaded by the CPU.
 ; It signals its decision on a dedicated output pin for the muxer to read,
 ; and uses an IRQ to synchronize the start of the process with the muxer.
-; .program flexray_frameid_matcher
-; .define public IDLE_EOP_COUNT 20
-; ; OVERRIDE_ENABLE output pin. 
-; ; RX input pin.
-; .wrap_target
-; entry_point:
-;     set pindirs, 1          ; Set the decision pin to be an output.
-;     set pins, 0             ; Drive decision pin LOW (default = no match).
+.program flexray_frameid_matcher
+.define public CYCLE_REPETITION_BITS_POW 2 ; 2bit lsb means 2**2, repeatevery 4 cycles
+; OVERRIDE_ENABLE output pin. 
+; RX input pin.
+.wrap_target
+entry_point:
+    mov isr, null
+    wait 1 irq 0 ; wait for bss streamer start
 
-; wait_for_idle:
-;     ; Wait for the bus to be idle for 300 cycles (30 checks * 10 cycles).
-;     ; This ensures we don't start listening mid-frame.
-;     set x, 29
-; idle_loop:
-;     jmp pin, is_high [4]    ; If pin is high, continue. Takes 5 cycles.
-;     jmp entry_point [4]     ; If pin is low, not idle. Restart check. Takes 5 cycles.
-; is_high:
-;     jmp x-- idle_loop [4]   ; Pin is high, continue countdown. Takes 5 cycles.
-;                             ; Loop finishes when x is 0, indicating 300 cycles of high.
-    
-;     ; Idle period detected. Now, wait for the TSS -> FSS transition.
-;     wait 0 pin 0            ; Wait for the bus to go low (start of TSS).
-;     wait 1 pin 0            ; Wait for the bus to go high (start of FSS).
-    
-;     ; FSS detected. This is our master synchronization point.
-;     irq set 0               ; Trigger IRQ 0 to wake up the Muxer.
-;     set pins, 0             ; Ensure decision pin is low at the start of the frame.
+set x, 4 ; skip 5 indicator bits
+skip_indicator_bits:
+    nop [8]
+    jmp x-- skip_indicator_bits
 
-;     ; We are at the very start of the FSS '1' bit. A FlexRay bit is 10 cycles.
-;     ; The 'wait 1' instruction took 1 cycle. We wait 9 more to complete the bit.
-;     nop [8]                 ; 8+1=9 cycles.
+set x, 10 ; read 11 bits of ID
+read_slot_id:
+    in pins, 1 [8]
+    jmp x-- read_slot_id
 
-;     ; Skip over the BSS (Byte Start Sequence), which is one '0' bit.
-;     nop [9]                 ; 10 cycles.
+set x, 21 ; payload len(7) + crc(11) + cycle(6) - CYCLE_REPETITION_BITS_POW - 1
+advance_to_cycle_count_lsb:
+    nop [8]
+    jmp x-- advance_to_cycle_count_lsb
 
-;     ; Skip over the 5 header bits that precede the Frame ID.
-;     ; (5 bits * 10 cycles/bit = 50 cycles).
-;     set x, 4                ; Loop 5 times (x=4 down to 0).
-; skip_header_bits:
-;     nop [9]
-;     jmp x-- skip_header_bits
+set x, CYCLE_REPETITION_BITS_POW
+read_cycle_count_lsb:
+    in pins, 1 [8]
+    jmp x-- read_cycle_count_lsb
+; now the sampling phase shifted by 4 set instructions, very near to the next bit start
 
-;     ; Read the 11-bit Frame ID. We sample in the middle of each 10-cycle bit window.
-;     ; (11 bits * 10 cycles/bit = 110 cycles).
-;     set x, 10               ; Loop 11 times.
-; read_id_loop:
-;     nop [3]                 ; 4 cycles delay.
-;     in pins, 1              ; 1 cycle to sample at bit-center (cycle 5).
-;     nop [4]                 ; 5 cycles to wait for the rest of the bit.
-;     jmp x-- read_id_loop
+start_matching:
+    mov x, isr
+    pull noblock
+    mov y, osr
+    jmp x!=y, mismatch
+match:
+    set pins, 1
+    wait 1 irq 1 ; wait for bss streamer stop
+    set pins, 0
+    jmp entry_point
 
-;     ; The 11-bit ID is now in the ISR. Compare it with the target ID from the Y register.
-;     mov x, y                ; Copy target ID from Y to X.
-;     jmp x!=is, mismatch     ; If X (target) != ISR (actual), it's not a match.
-
-; ; --- Match Success ---
-;     set pins, 1             ; ID Matched! Set the decision pin HIGH.
-;     jmp rest_of_frame
-
-; mismatch:
-;     nop                     ; ID did not match. Decision pin remains LOW.
-
-; rest_of_frame:
-;     ; The decision is locked in. Now detect End-Of-Frame by looking for 20 idle bits.
-;     set x, IDLE_EOP_COUNT
-; eop_loop:
-;     nop [3]                 ; 4 cycles to align to center of bit window.
-;     jmp pin, high_in_eop    ; 1 cycle to check pin state.
-;     ; Path for a LOW bit:
-;     set x, IDLE_EOP_COUNT  ; 1 cycle to reset the idle counter.
-;     nop [3]                 ; 4 cycles of delay. Total path = 4+1+1+4 = 10 cycles.
-;     jmp eop_loop
-; high_in_eop:
-;     ; Path for a HIGH bit:
-;     nop [4]                 ; 5 cycles of delay. Total path = 4+1+5 = 10 cycles.
-;     jmp x-- eop_loop
-;     ; jmp fails if x becomes 0, meaning 20 high bits were seen. EOP found.
-;     jmp entry_point         ; Restart the entire process for the new frame.
-; .wrap
+mismatch:
+    set pins, 0
+    wait 1 irq 1
+.wrap
 
 
 ; --- Program 2: The Forwarder ---
