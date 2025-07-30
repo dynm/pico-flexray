@@ -3,7 +3,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
-#include "flexray_frame.h" // For FRAME_BUF_SIZE_WORDS etc.
+#include "flexray_frame.h"
 
 // --- Global State ---
 extern uint dma_data_from_ecu_chan;

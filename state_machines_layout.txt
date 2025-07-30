@@ -1,0 +1,23 @@
+BSS_STREAMER:
+in: 
+    1. raw_flexray_rxd
+out: 
+    1. bss to cpu
+    2. bss to output pin
+    3. irq to trigger SLOT_ID_MATCHER
+
+SLOT_ID_MATCHER:
+in: 
+    1. irq from flexray_bss_streamer
+    2. bss from flexray_bss_streamer
+out: 
+    1. enable_inject
+
+FORWARDER:
+in:
+    1. enable_inject
+    2. raw_flexray_rxd
+    3. fifo
+
+out:
+    1. raw_flexray_txd

@@ -32,7 +32,7 @@ is_high:
 
     wait 0 pin 0                   ; wait for TSS low
     wait 1 pin 0 side 1    [6]     ; enable tx then wait for FSS high
-    set x, BSS_SEARCH_TIMEOUT  [3] ; 6+1+3=10, skip 1 bit of FSS high
+    set x, BSS_SEARCH_TIMEOUT  [2] ; 6+1+2=9, skip 1 bit of FSS high
 
 ; search for bss falling edge at 50MHz [State Machine@100MHz]
 ; it will lead to signal phase shift at most 10ns, it is ok.
@@ -46,9 +46,11 @@ high_path:
 
 found_falling_edge:             ; 2nd cycle of BSS low
     nop [7]                     ; 2+8=10, skip 1 bit of BSS low
-    set y, DATA_BITS [4]        ; skip 5 cycles, sample at near center of data bit
+    set y, DATA_BITS [3]        ; skip 5 cycles, sample at near center of data bit
+    irq set 0                   ; notify slot id matcher start
 sample_byte_loop:
-    in pins, 1 [7]              ; Sample bit at its center, total 10 cycles/bit.
+    in pins, 1                     ; Sample bit at its center, total 10 cycles/bit.
+    mov pins, pins   [6]           ; Transfer bits to detector.
     jmp y-- sample_byte_loop [1]
 
 bss_stall_low_detection_loop:
@@ -59,7 +61,8 @@ wait_bss_high_loop:             ; Avoid stall by low pin.
                                 ; If we timeout, the bus is stuck low. Abort.
 frame_end:
     push noblock ; reset isr counter
-    irq set 0
+    irq set 3    ; notify DMA
+    irq set 1    ; notify slot id matcher stop
 .wrap
 
 % c-sdk {

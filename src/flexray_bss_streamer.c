@@ -41,7 +41,7 @@ void streamer_irq0_handler()
 {
     // The interrupt is on PIO0's IRQ 0. We must clear this specific interrupt flag.
     // The previous code was using a system-level IRQ number, which is incorrect for this function.
-    pio_interrupt_clear(pio0, 0);
+    pio_interrupt_clear(pio0, 3);
     g_new_data_available = true;
     irq_handler_call_count++;
 
@@ -99,7 +99,7 @@ void setup_stream(PIO pio,
                           262,                         // Transfer count: 64 words (2048 bits)
                           false                       // Don't start yet
     );
-    pio_set_irq0_source_enabled(pio, pis_interrupt0, true);
+    pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
     irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
     irq_set_enabled(pio_get_irq_num(pio, 0), true);
 
