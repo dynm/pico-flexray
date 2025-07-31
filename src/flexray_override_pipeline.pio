@@ -82,8 +82,8 @@ out_1_byte:
     jmp x-- out_1_byte  
     jmp entry_point
 forward_loop:
-    mov osr, null
     mov pins, pins
+    mov osr, null [7]
 .wrap
 
 % c-sdk {

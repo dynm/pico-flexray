@@ -29,7 +29,7 @@
 #define REPLAY_TX_PIN 15
 #define STBN_PIN 3
 
-#define RXD_FROM_ECU_PIN 13
+#define RXD_FROM_ECU_PIN 4
 #define TXD_TO_ECU_PIN 5
 #define TXEN_TO_ECU_PIN 6
 
@@ -86,21 +86,25 @@ int main()
     gpio_pull_up(INJECT_SWITCH_TO_ECU_PIN);
     gpio_pull_up(INJECT_SWITCH_TO_VEHICLE_PIN);
 
+    gpio_init(RXD_FROM_ECU_PIN);
+    gpio_set_dir(RXD_FROM_ECU_PIN, GPIO_IN);
+    gpio_init(RXD_FROM_VEHICLE_PIN);
+    gpio_set_dir(RXD_FROM_VEHICLE_PIN, GPIO_IN);
     gpio_pull_up(RXD_FROM_ECU_PIN);
     gpio_pull_up(RXD_FROM_VEHICLE_PIN);
 
-    // bool clock_configured = set_sys_clock_khz(100000, false);
+    bool clock_configured = set_sys_clock_khz(100000, false);
     stdio_init_all();
     
     // Initialize Panda USB interface
     panda_usb_init();
     // --- Set system clock to 100MHz (RP2350) ---
     // make PIO clock div has no fraction, reduce jitter
-    // if (!clock_configured) {
-    //     printf("Warning: Failed to set system clock, using default\n");
-    // } else {
-    //     printf("System clock set to 100MHz\n");
-    // }
+    if (!clock_configured) {
+        printf("Warning: Failed to set system clock, using default\n");
+    } else {
+        printf("System clock set to 100MHz\n");
+    }
 
     print_pin_assignments();
 
