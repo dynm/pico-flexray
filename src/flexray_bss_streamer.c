@@ -89,13 +89,13 @@ void setup_stream(PIO pio,
     dma_channel_configure(dma_data_from_ecu_chan, &dma_c_from_ecu,
                           capture_buffer_a,       // Destination: Buffer A
                           &pio->rxf[sm_from_ecu], // Source: PIO RX FIFO
-                          262,                     // Transfer count: 64 words (2048 bits)
+                          FRAME_BUF_SIZE_BYTES,                     // Transfer count: 64 words (2048 bits)
                           false                   // Don't start yet
     );
     dma_channel_configure(dma_data_from_vehicle_chan, &dma_c_from_vehicle,
                           capture_buffer_b,           // Destination: Buffer B
                           &pio->rxf[sm_from_vehicle], // Source: PIO RX FIFO
-                          262,                         // Transfer count: 64 words (2048 bits)
+                          FRAME_BUF_SIZE_BYTES,                         // Transfer count: 64 words (2048 bits)
                           false                       // Don't start yet
     );
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
