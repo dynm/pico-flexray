@@ -77,12 +77,10 @@ int main()
     gpio_set_dir(STBN_PIN, GPIO_OUT);
     gpio_put(STBN_PIN, 1);
 
-    // pull up inject switches, stop injecting
-    // will connect to the trigger out pins in the future
-    // use pull up to avoid potiential errata 9
     gpio_pull_up(TXEN_TO_ECU_PIN);
     gpio_pull_up(TXEN_TO_VEHICLE_PIN);
 
+    // pull up inject switches, stop injecting
     gpio_pull_up(INJECT_SWITCH_TO_ECU_PIN);
     gpio_pull_up(INJECT_SWITCH_TO_VEHICLE_PIN);
 
@@ -118,7 +116,7 @@ int main()
         RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN, INJECT_SWITCH_TO_VEHICLE_PIN,
         RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN, INJECT_SWITCH_TO_ECU_PIN);
     
-    uint8_t temp_buffer[FRAME_BUF_SIZE_BYTES];
+    uint8_t temp_buffer[MAX_FRAME_BUF_SIZE_BYTES];
     uint32_t main_loop_count = 0;
     uint32_t data_ready_count = 0;
     uint32_t irq_count_prev = 0;

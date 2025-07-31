@@ -20,8 +20,8 @@ uint dma_control_chan; // New: for automatic buffer switching
 static uint32_t rearm_data;
 
 // Ping-pong buffers, max payload is 254, 8 bytes for header and trailer
-volatile uint8_t capture_buffer_a[FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
-volatile uint8_t capture_buffer_b[FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
+volatile uint8_t capture_buffer_a[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
+volatile uint8_t capture_buffer_b[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
 
 // Address table for automatic buffer switching
 volatile void *buffer_addresses[2] = {
@@ -44,13 +44,13 @@ void streamer_irq0_handler()
 
     uint32_t transfer_remaining_from_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
     uint32_t transfer_remaining_from_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
-    if (transfer_remaining_from_ecu != FRAME_BUF_SIZE_BYTES) // from ecu transferred
+    if (transfer_remaining_from_ecu != MAX_FRAME_BUF_SIZE_BYTES) // from ecu transferred
     {
-        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_ECU;
+        ((uint8_t *)buffer_addresses[current_buffer_index])[MAX_FRAME_BUF_SIZE_BYTES - 1] = FROM_ECU;
     }
-    if (transfer_remaining_from_vehicle != FRAME_BUF_SIZE_BYTES) // from vehicle transferred
+    if (transfer_remaining_from_vehicle != MAX_FRAME_BUF_SIZE_BYTES) // from vehicle transferred
     {
-        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
+        ((uint8_t *)buffer_addresses[current_buffer_index])[MAX_FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
     }
     multicore_fifo_push_timeout_us(current_buffer_index, 0);
 
@@ -60,8 +60,8 @@ void streamer_irq0_handler()
 
     dma_channel_set_write_addr(dma_data_from_ecu_chan, buffer_addresses[current_buffer_index], false);
     dma_channel_set_write_addr(dma_data_from_vehicle_chan, buffer_addresses[current_buffer_index], false);
-    dma_channel_set_trans_count(dma_data_from_ecu_chan, FRAME_BUF_SIZE_BYTES, true);
-    dma_channel_set_trans_count(dma_data_from_vehicle_chan, FRAME_BUF_SIZE_BYTES, true);
+    dma_channel_set_trans_count(dma_data_from_ecu_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
+    dma_channel_set_trans_count(dma_data_from_vehicle_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
 }
 
 void setup_stream(PIO pio,
@@ -89,13 +89,13 @@ void setup_stream(PIO pio,
     dma_channel_configure(dma_data_from_ecu_chan, &dma_c_from_ecu,
                           capture_buffer_a,       // Destination: Buffer A
                           &pio->rxf[sm_from_ecu], // Source: PIO RX FIFO
-                          FRAME_BUF_SIZE_BYTES,                     // Transfer count: 64 words (2048 bits)
+                          MAX_FRAME_BUF_SIZE_BYTES,                     // Transfer count: 64 words (2048 bits)
                           false                   // Don't start yet
     );
     dma_channel_configure(dma_data_from_vehicle_chan, &dma_c_from_vehicle,
                           capture_buffer_b,           // Destination: Buffer B
                           &pio->rxf[sm_from_vehicle], // Source: PIO RX FIFO
-                          FRAME_BUF_SIZE_BYTES,                         // Transfer count: 64 words (2048 bits)
+                          MAX_FRAME_BUF_SIZE_BYTES,                         // Transfer count: 64 words (2048 bits)
                           false                       // Don't start yet
     );
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);

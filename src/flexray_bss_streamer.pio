@@ -14,7 +14,7 @@
 
 .wrap_target
 entry_point:
-    set x, IDLE_COUNT side 0
+    set x, IDLE_COUNT side 1
     ; --- 1. Initial Bus Idle Check ---
     ; this loop does not need to be aligned to the center of the bit window.
     ; it only detects 11 bits high, the wait will catch the edge.
@@ -31,7 +31,7 @@ is_high:
     ; ¯¯¯¯¯¯¯¯¯¯¯|__________|¯¯|_|¯|_
 
     wait 0 pin 0                   ; wait for TSS low
-    wait 1 pin 0 side 1    [6]     ; enable tx then wait for FSS high
+    wait 1 pin 0 side 0    [6]     ; enable tx then wait for FSS high
     set x, BSS_SEARCH_TIMEOUT  [2] ; 6+1+2=9, skip 1 bit of FSS high
 
 ; search for bss falling edge at 50MHz [State Machine@100MHz]
