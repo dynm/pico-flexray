@@ -24,7 +24,8 @@ static inline uint32_t get_bits_msb(const uint32_t *buffer, int start_bit_idx, i
     }
 }
 
-static bool get_bit_from_byte_array(const uint8_t *buffer, int bit_index) {
+static bool get_bit_from_byte_array(const uint8_t *buffer, int bit_index)
+{
     int byte_index = bit_index / 8;
     int bit_offset = 7 - (bit_index % 8);
     return (buffer[byte_index] >> bit_offset) & 1;
@@ -33,7 +34,7 @@ static bool get_bit_from_byte_array(const uint8_t *buffer, int bit_index) {
 static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer, const flexray_frame_t *frame)
 {
     uint32_t data_word = 0;
-    data_word = (uint32_t)(raw_buffer[0]&0b11111) << 16;
+    data_word = (uint32_t)(raw_buffer[0] & 0b11111) << 16;
     data_word |= (uint32_t)raw_buffer[1] << 8;
     data_word |= (uint32_t)raw_buffer[2] << 0;
     data_word >>= 1;
@@ -41,11 +42,11 @@ static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer, const fl
     uint16_t crc = 0x1A;
     const uint16_t poly = 0x385;
 
-    uint8_t byte0 = (data_word >> 12) & 0xFF;  // bit19-12
+    uint8_t byte0 = (data_word >> 12) & 0xFF; // bit19-12
     uint8_t index = ((crc >> 3) & 0xFF) ^ byte0;
     crc = ((crc << 8) & 0x7FF) ^ flexray_crc11_table[index];
 
-    uint8_t byte1 = (data_word >> 4) & 0xFF;   // bit11-4
+    uint8_t byte1 = (data_word >> 4) & 0xFF; // bit11-4
     index = ((crc >> 3) & 0xFF) ^ byte1;
     crc = ((crc << 8) & 0x7FF) ^ flexray_crc11_table[index];
 
@@ -68,7 +69,7 @@ static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer, const fl
     return crc & 0x7FF;
 }
 
-static uint32_t calculate_flexray_payload_crc(const uint8_t *raw_buffer, const flexray_frame_t *frame)
+static uint32_t calculate_flexray_frame_crc(const uint8_t *raw_buffer, const flexray_frame_t *frame)
 {
     uint32_t crc = 0xFEDCBA;
     const uint32_t poly = 0x5D6DCB;
@@ -90,46 +91,45 @@ static bool check_header_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
     return calculated_crc == frame->header_crc;
 }
 
-static bool check_payload_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
+static bool check_frame_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
 {
     if (frame->payload_length_words == 0)
     {
-        return frame->payload_crc == 0;
+        return frame->frame_crc == 0;
     }
-    uint32_t calculated_crc = calculate_flexray_payload_crc(raw_buffer, frame);
-    return calculated_crc == frame->payload_crc;
+    uint32_t calculated_crc = calculate_flexray_frame_crc(raw_buffer, frame);
+    return calculated_crc == frame->frame_crc;
 }
 
 bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame)
 {
-    if (!raw_buffer || !parsed_frame) {
+    if (!raw_buffer || !parsed_frame)
+    {
         return false;
     }
 
     // --- Header Parsing (5 bytes) ---
-    const uint8_t* header = raw_buffer;
+    const uint8_t *header = raw_buffer;
 
     // Byte 0: Indicators and Frame ID MSBs
-    parsed_frame->startup_frame_indicator    = (header[0] >> 7) & 0x01;
-    parsed_frame->sync_frame_indicator       = (header[0] >> 6) & 0x01;
-    parsed_frame->null_frame_indicator       = (header[0] >> 5) & 0x01;
-    parsed_frame->payload_preamble_indicator = (header[0] >> 4) & 0x01;
-    parsed_frame->reserved_bit = (header[0] >> 3) & 0x01;
-    
+    parsed_frame->indicators = header[0] >> 3;
+
     // Byte 0 & 1: Assemble the 11-bit Frame ID (Big-Endian)
     // Frame ID High 3 bits from Byte 0, Low 8 bits are all of Byte 1
     parsed_frame->frame_id = ((uint16_t)(header[0] & 0x07) << 8) | header[1];
+    parsed_frame->source = raw_buffer[FRAME_BUF_SIZE_BYTES - 1];
 
     // Byte 2: Payload Length and Header CRC MSB
     parsed_frame->payload_length_words = (header[2] >> 1) & 0x7F; // 7 bits
-    if (parsed_frame->payload_length_words * 2 > MAX_FRAME_PAYLOAD_BYTES) {
+    if (parsed_frame->payload_length_words * 2 > MAX_FRAME_PAYLOAD_BYTES)
+    {
         return false;
     }
 
     // Byte 2, 3, 4: Assemble the 11-bit Header CRC (Big-Endian)
     uint16_t crc_part1 = (uint16_t)(header[2] & 0x01) << 10; // Bit 10
-    uint16_t crc_part2 = (uint16_t)header[3] << 2;            // Bits 9-2
-    uint16_t crc_part3 = (header[4] >> 6) & 0x03;           // Bits 1-0
+    uint16_t crc_part2 = (uint16_t)header[3] << 2;           // Bits 9-2
+    uint16_t crc_part3 = (header[4] >> 6) & 0x03;            // Bits 1-0
     parsed_frame->header_crc = crc_part1 | crc_part2 | crc_part3;
 
     // Byte 4: Assemble the 6-bit Cycle Count
@@ -143,17 +143,14 @@ bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame)
     // Its position depends on the payload length.
     // Note: FlexRay payload length is in words (2 bytes).
     uint16_t payload_len_bytes = parsed_frame->payload_length_words * 2;
-    if (5 + payload_len_bytes + 3 <= FRAME_BUF_SIZE_BYTES) {
-        const uint8_t* crc_ptr = &raw_buffer[5 + payload_len_bytes];
+    if (5 + payload_len_bytes + 3 <= FRAME_BUF_SIZE_BYTES)
+    {
+        const uint8_t *crc_ptr = &raw_buffer[5 + payload_len_bytes];
         // Assemble 24-bit CRC (Big-Endian)
-        parsed_frame->payload_crc = ((uint32_t)crc_ptr[0] << 16) | 
-                                    ((uint32_t)crc_ptr[1] << 8)  | 
+        parsed_frame->frame_crc = ((uint32_t)crc_ptr[0] << 16) |
+                                    ((uint32_t)crc_ptr[1] << 8) |
                                     (uint32_t)crc_ptr[2];
-    } else {
-        return false;
     }
-    parsed_frame->source = raw_buffer[FRAME_BUF_SIZE_BYTES - 1];
-
     return true;
 }
 
@@ -164,7 +161,8 @@ void print_frame(flexray_frame_t *frame)
     {
         printf("%02X", frame->payload[i]);
     }
-    printf(",%02X,%s\n", frame->payload_crc, frame->source == FROM_ECU ? "ECU" : frame->source == FROM_VEHICLE ? "VEHICLE" : "UNKNOWN");
+    printf(",%02X,%s\n", frame->frame_crc, frame->source == FROM_ECU ? "ECU" : frame->source == FROM_VEHICLE ? "VEHICLE"
+                                                                                                               : "UNKNOWN");
 }
 
 bool is_valid_frame(flexray_frame_t *frame, const uint8_t *raw_buffer)
@@ -182,10 +180,5 @@ bool is_valid_frame(flexray_frame_t *frame, const uint8_t *raw_buffer)
         return false;
     }
 
-    if (frame->null_frame_indicator)
-    {
-        return true;
-    }
-
-    return check_payload_crc(frame, raw_buffer);
+    return check_frame_crc(frame, raw_buffer);
 }

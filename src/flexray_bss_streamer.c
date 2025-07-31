@@ -6,6 +6,7 @@
 #include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/clocks.h"
+#include "pico/multicore.h"
 
 #include "flexray_bss_streamer.pio.h"
 #include "flexray_bss_streamer.h"
@@ -30,9 +31,6 @@ volatile void *buffer_addresses[2] = {
 // Current buffer index (for CPU to know which buffer was just filled)
 volatile uint32_t current_buffer_index = 0;
 
-// Flag to indicate that a new buffer is ready for processing
-volatile bool g_new_data_available = false;
-
 // Debug counter for interrupt handler
 volatile uint32_t irq_handler_call_count = 0;
 
@@ -42,7 +40,6 @@ void streamer_irq0_handler()
     // The interrupt is on PIO0's IRQ 0. We must clear this specific interrupt flag.
     // The previous code was using a system-level IRQ number, which is incorrect for this function.
     pio_interrupt_clear(pio0, 3);
-    g_new_data_available = true;
     irq_handler_call_count++;
 
     uint32_t transfer_remaining_from_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
@@ -55,6 +52,8 @@ void streamer_irq0_handler()
     {
         ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
     }
+    multicore_fifo_push_timeout_us(current_buffer_index, 0);
+
     dma_channel_abort(dma_data_from_ecu_chan);
     dma_channel_abort(dma_data_from_vehicle_chan);
     current_buffer_index = 1 - current_buffer_index;

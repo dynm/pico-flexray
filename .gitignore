@@ -4,3 +4,4 @@ build
 unused
 .cache
 __pycache__
+*.csv

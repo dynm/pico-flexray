@@ -47,7 +47,7 @@ high_path:
 found_falling_edge:             ; 2nd cycle of BSS low
     nop [7]                     ; 2+8=10, skip 1 bit of BSS low
     set y, DATA_BITS [3]        ; skip 5 cycles, sample at near center of data bit
-    irq set 0                   ; notify slot id matcher start
+    irq set 0                   ; notify frame id matcher start
 sample_byte_loop:
     in pins, 1                     ; Sample bit at its center, total 10 cycles/bit.
     mov pins, pins   [6]           ; Transfer bits to detector.
@@ -62,18 +62,13 @@ wait_bss_high_loop:             ; Avoid stall by low pin.
 frame_end:
     push noblock ; reset isr counter
     irq set 3    ; notify DMA
-    irq set 1    ; notify slot id matcher stop
+    irq set 1    ; notify frame id matcher stop
 .wrap
 
 % c-sdk {
 
 void flexray_bss_streamer_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_en_pin) {
-    // --- GPIO Configuration: Must be done BEFORE pio_gpio_init() ---
-    // Enable pull-up on the FlexRay RX pin to ensure it's high when idle.
-    gpio_pull_up(rx_pin);
-
     // Now, let PIO take control of the pins.
-    pio_gpio_init(pio, rx_pin);
     pio_gpio_init(pio, tx_en_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);

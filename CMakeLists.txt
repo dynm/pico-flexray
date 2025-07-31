@@ -71,6 +71,11 @@ target_link_libraries(pico_flexray
         hardware_gpio
         pico_stdlib
         tinyusb_device
+        pico_multicore
+        hardware_dma
+        hardware_pio
+        hardware_interp
+        pico_unique_id
         )
 
 # Add the standard include files to the build
@@ -81,11 +86,6 @@ target_include_directories(pico_flexray PRIVATE
 
 # Add any user requested libraries
 target_link_libraries(pico_flexray 
-        hardware_dma
-        hardware_pio
-        hardware_interp
-        pico_unique_id
-        tinyusb_device
         )
 
 pico_add_extra_outputs(pico_flexray)

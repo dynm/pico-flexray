@@ -4,9 +4,9 @@ in:
 out: 
     1. bss to cpu
     2. bss to output pin
-    3. irq to trigger SLOT_ID_MATCHER
+    3. irq to trigger FRAME_ID_MATCHER
 
-SLOT_ID_MATCHER:
+FRAME_ID_MATCHER:
 in: 
     1. irq from flexray_bss_streamer
     2. bss from flexray_bss_streamer

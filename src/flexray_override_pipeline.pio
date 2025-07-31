@@ -35,9 +35,9 @@ skip_indicator_bits:
     jmp x-- skip_indicator_bits
 
 set x, 10 ; read 11 bits of ID
-read_slot_id:
+read_frame_id:
     in pins, 1 [8]
-    jmp x-- read_slot_id
+    jmp x-- read_frame_id
 
 set x, 21 ; payload len(7) + crc(11) + cycle(6) - CYCLE_REPETITION_BITS_POW - 1
 advance_to_cycle_count_lsb:
@@ -68,60 +68,35 @@ mismatch:
 
 
 ; --- Program 2: The Forwarder ---
-; This program forwards FlexRay RX to TX with override capability.
-; Design: Detect genuine idle period (10 bits HIGH) → wait for TSS falling edge
-; Avoids blind wait triggers that could match data stream edges
-; TSS = LOW for 5-15 bits, FSS = rising edge + 1 bit HIGH  
-; BSS = 1 bit HIGH + 1 bit LOW (10 pattern)
-;
-; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
-.program flexray_forwarder
-; Pin assignments (set by C code):
-; - RX input pin (pin 0 in this program)
-; - TX output pin (out pins)
-;
-; Timing: 100MHz clock, 10MHz FlexRay = 10 cycles per bit (10x oversampling)
 
-; .define public BUS_IDLE_BIT_COUNT 10 ; idle 11 bit
-; .side_set 1 opt
+.program flexray_forwarder
 .wrap_target
 entry_point:
-    jmp pin, inject_loop
+    jmp pin, forward_loop
+inject_loop:
+    set pins, 1 [9]
+    set pins, 0 [9]
+    set x, 7
+out_1_byte:
+    out pins, 1 [8]
+    jmp x-- out_1_byte  
+    jmp entry_point
 forward_loop:
     mov osr, null
     mov pins, pins
-    jmp entry_point
-inject_loop:
-    set pins, 1
-    set pins, 0
-    set x, 7
-out_1_byte:
-    out pins, 1
-    jmp x-- out_1_byte    
 .wrap
 
 % c-sdk {
 
-void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin, uint tx_en_pin, bool loopback_mode) {
-    // --- GPIO Configuration: Must be done BEFORE pio_gpio_init() ---
-    // Enable pull-up on the FlexRay RX pin to ensure it's high when idle.
-    if (!loopback_mode) {
-        gpio_pull_up(rx_pin);
-        pio_gpio_init(pio, rx_pin);
-        pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
-    }
-
+void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin, uint inject_switch_pin) {
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, tx_pin);
-    pio_gpio_init(pio, tx_en_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
-    pio_sm_set_consecutive_pindirs(pio, sm, tx_en_pin, 1, true);
     pio_sm_config c = flexray_forwarder_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, rx_pin);
-    sm_config_set_jmp_pin(&c, rx_pin);
-    sm_config_set_sideset_pins(&c, tx_en_pin);
+    sm_config_set_jmp_pin(&c, inject_switch_pin);
     sm_config_set_out_pins(&c, tx_pin, 1);
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);

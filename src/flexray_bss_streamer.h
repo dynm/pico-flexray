@@ -17,12 +17,6 @@ extern volatile uint8_t capture_buffer_b[];
 // Address table for automatic buffer switching
 extern volatile void *buffer_addresses[2];
 
-// Current buffer index (for CPU to know which buffer was just filled)
-extern volatile uint32_t current_buffer_index;
-
-// Flag to indicate that a new buffer is ready for processing
-extern volatile bool g_new_data_available;
-
 // Debug counter for interrupt handler
 extern volatile uint32_t irq_handler_call_count;
 

@@ -13,6 +13,7 @@
 #include "hardware/pll.h"
 #include "hardware/xosc.h"
 #include "hardware/timer.h"
+#include "pico/multicore.h"
 
 #include "flexray_override_pipeline.pio.h"
 #include "replay_frame.h"
@@ -24,74 +25,70 @@
 #define FLASH __attribute__((section(".rodata")))
 // --- Configuration ---
 
-// -- Mode 1: Streamer Pins --
+// -- Streamer Pins --
 #define REPLAY_TX_PIN 15
+#define STBN_PIN 3
+
 #define RXD_FROM_ECU_PIN 13
-#define STBN_ECU_PIN 12
-#define TXEN_TO_VEHICLE_PIN 25
-#define RXD_FROM_VEHICLE_PIN 14
-#define TXEN_TO_ECU_PIN 16
+#define TXD_TO_ECU_PIN 5
+#define TXEN_TO_ECU_PIN 6
 
-// -- Mode 2: Forwarder Pins --
-#define FR_RX_FROM_ECU_PIN 8
-#define FR_TX_TO_VEHICLE_PIN 9
-#define FR_TXEN_TO_VEHICLE_PIN 10
+#define RXD_FROM_VEHICLE_PIN 28
+#define TXD_TO_VEHICLE_PIN 27
+#define TXEN_TO_VEHICLE_PIN 26
 
-#define FR_RX_FROM_VEHICLE_PIN 11
-#define FR_TX_TO_ECU_PIN 12
-#define FR_TXEN_TO_ECU_PIN 13
+// -- Injector Pins, do not connect physical pins to these --
+#define INJECT_SWITCH_TO_ECU_PIN 20 
+#define INJECT_SWITCH_TO_VEHICLE_PIN 21
 
-// -- Mode 3: Interceptor Pins --
-#define MITM_RX_PIN 8    // Receive from this pin
-#define MITM_TX_PIN 9    // Transmit on this pin
-#define MITM_TXEN_PIN 10 // Transmit enable for TX pin
-
-// -- Mode 4 & 5: On-the-fly Override Pins --
-#define OVR_RX_PIN 8
-#define OVR_TX_PIN 9
-#define OVR_TXEN_PIN 10
-#define OVR_DECISION_PIN 11 // Internal pipeline communication pin for Mode 5
-
-#define FLEXRAY_BIT_RATE_MBPS 10
-#define OVERSAMPLE_RATE 10
-
-// --- Streamer-specific definitions ---
-// Constants like FRAME_BITS_TO_CAPTURE, FRAME_BUF_SIZE_WORDS, and TOTAL_FRAMES
-// have been moved to flexray_frame.h for better modularity.
-
-// --- Global State ---
-// MOVED to flexray_bss_streamer.c
 
 void setup_forwarder(PIO pio,
-    uint rx_pin_from_ecu, uint tx_pin_to_vehicle, uint tx_en_pin_to_vehicle,
-    uint rx_pin_from_vehicle, uint tx_pin_to_ecu, uint tx_en_pin_to_ecu)
+    uint rx_pin_from_ecu, uint tx_pin_to_vehicle, uint inject_switch_to_vehicle,
+    uint rx_pin_from_vehicle, uint tx_pin_to_ecu, uint inject_switch_to_ecu)
 {
-    bool loopback_mode = true;
     uint offset = pio_add_program(pio, &flexray_forwarder_program);
     uint sm_from_ecu = pio_claim_unused_sm(pio, true);
     uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
-    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle, tx_en_pin_to_vehicle, loopback_mode);
-    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu, tx_en_pin_to_ecu, loopback_mode);
-
+    
+    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle, inject_switch_to_vehicle);
+    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu, inject_switch_to_ecu);
 }
 
-void print_flexray_frame_layout() {
-    printf("--- flexray_frame_t layout ---\n");
-    printf("sizeof(flexray_frame_t) = %zu bytes\n\n", sizeof(flexray_frame_t));
+void print_pin_assignments() {
+    printf("Test Data Output Pin: %02d\n", REPLAY_TX_PIN);
+    printf("STBN Pin: %02d\n", STBN_PIN);
+    printf("ECU Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FROM_ECU_PIN, TXD_TO_ECU_PIN, TXEN_TO_ECU_PIN);
+    printf("VEH Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FROM_VEHICLE_PIN, TXD_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN);
+    printf("Injector Pins: ECU=%02d, VEH=%02d\n", INJECT_SWITCH_TO_ECU_PIN, INJECT_SWITCH_TO_VEHICLE_PIN);
+}
 
-    printf("offsetof(reserved_bit)              = %zu\n", offsetof(flexray_frame_t, reserved_bit));
-    printf("offsetof(frame_id)                  = %zu\n", offsetof(flexray_frame_t, frame_id));
-    printf("offsetof(payload_length_words)      = %zu\n", offsetof(flexray_frame_t, payload_length_words));
-    printf("offsetof(header_crc)                = %zu\n", offsetof(flexray_frame_t, header_crc));
-    printf("offsetof(cycle_count)               = %zu\n", offsetof(flexray_frame_t, cycle_count));
-    printf("offsetof(payload)                   = %zu\n", offsetof(flexray_frame_t, payload));
-    printf("offsetof(payload_crc)               = %zu\n", offsetof(flexray_frame_t, payload_crc));
-    printf("offsetof(source)                    = %zu\n", offsetof(flexray_frame_t, source));
-    printf("--------------------------------\n");
+void core1_entry() {
+    setup_stream(pio0, 
+        RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN, 
+        RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
+    while (1) {
+        __wfi();
+    }
 }
 
 int main()
 {
+    gpio_init(STBN_PIN);
+    gpio_set_dir(STBN_PIN, GPIO_OUT);
+    gpio_put(STBN_PIN, 1);
+
+    // pull up inject switches, stop injecting
+    // will connect to the trigger out pins in the future
+    // use pull up to avoid potiential errata 9
+    gpio_pull_up(TXEN_TO_ECU_PIN);
+    gpio_pull_up(TXEN_TO_VEHICLE_PIN);
+
+    gpio_pull_up(INJECT_SWITCH_TO_ECU_PIN);
+    gpio_pull_up(INJECT_SWITCH_TO_VEHICLE_PIN);
+
+    gpio_pull_up(RXD_FROM_ECU_PIN);
+    gpio_pull_up(RXD_FROM_VEHICLE_PIN);
+
     // bool clock_configured = set_sys_clock_khz(100000, false);
     stdio_init_all();
     
@@ -105,20 +102,18 @@ int main()
     //     printf("System clock set to 100MHz\n");
     // }
 
-    print_flexray_frame_layout();
+    print_pin_assignments();
 
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
-    printf("\n--- FlexRay Continuous Streaming Bridge (RX Mode) ---\n");
+    printf("\n--- FlexRay Continuous Streaming Bridge (Forwarder Mode) ---\n");
 
     uint dma_replay_chan = setup_replay(pio1, REPLAY_TX_PIN);
-    gpio_init(STBN_ECU_PIN);
-    gpio_set_dir(STBN_ECU_PIN, GPIO_OUT);
-    gpio_put(STBN_ECU_PIN, 1);
-
-    setup_stream(pio0, RXD_FROM_ECU_PIN, FR_TXEN_TO_VEHICLE_PIN, RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
-    // setup_forwarder(pio1, REPLAY_TX_PIN, FR_TX_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN, FR_RX_FROM_VEHICLE_PIN, FR_TX_TO_ECU_PIN, FR_TXEN_TO_ECU_PIN);
-    printf("Connect GPIO %d to GPIO %d and send data\n", REPLAY_TX_PIN, RXD_FROM_ECU_PIN);
-
+    
+    multicore_launch_core1(core1_entry);
+    setup_forwarder(pio1, 
+        RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN, INJECT_SWITCH_TO_VEHICLE_PIN,
+        RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN, INJECT_SWITCH_TO_ECU_PIN);
+    
     uint8_t temp_buffer[FRAME_BUF_SIZE_BYTES];
     uint32_t main_loop_count = 0;
     uint32_t data_ready_count = 0;
@@ -154,10 +149,6 @@ int main()
             // panda_print_fifo_stats();
         }
         
-        // Wait for buffer index to change (indicating new data is ready)
-        static uint32_t last_seen_buffer_index = 0;
-        uint32_t current_seen_index = current_buffer_index;
-
         // check dma_replay_chan is stopped, restart it if it is
         if (!dma_channel_is_busy(dma_replay_chan))
         {
@@ -166,13 +157,12 @@ int main()
             dma_channel_set_read_addr(dma_replay_chan, replay_buffer, true);
         }
 
-        if (g_new_data_available)
+        uint32_t written_buffer_index;
+        if (multicore_fifo_pop_timeout_us(0, &written_buffer_index))
         {
-            last_seen_buffer_index = current_seen_index;
             data_ready_count++;
             // Copy the completed buffer (the one that's NOT currently being written to)
-            uint32_t completed_buffer_index = 1 - current_seen_index;
-            memcpy(temp_buffer, (const void *)buffer_addresses[completed_buffer_index], FRAME_BUF_SIZE_BYTES);
+            memcpy(temp_buffer, (const void *)buffer_addresses[written_buffer_index], FRAME_BUF_SIZE_BYTES);
 
             // Parse the frame from the copied data with hardware clock measurement
             flexray_frame_t frame;
@@ -191,7 +181,6 @@ int main()
             {
                 printf("Invalid frame: %d\n", frame.frame_id);
             }
-            g_new_data_available = false;
         }
     }
 
