@@ -27,6 +27,7 @@
 
 // -- Streamer Pins --
 #define REPLAY_TX_PIN 15
+#define BGE_PIN 2
 #define STBN_PIN 3
 
 #define RXD_FROM_ECU_PIN 4
@@ -66,13 +67,53 @@ void core1_entry() {
     setup_stream(pio0, 
         RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN, 
         RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
+
+    uint32_t last_dma_count_ecu = 0;
+    uint32_t last_dma_count_vehicle = 0;
+    int stall_count_ecu = 0;
+    int stall_count_vehicle = 0;
+
     while (1) {
-        __wfi();
+        sleep_ms(10); // Check every 10ms
+
+        // Check ECU stream
+        uint32_t current_dma_count_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
+        if (current_dma_count_ecu == last_dma_count_ecu) {
+            stall_count_ecu++;
+        } else {
+            stall_count_ecu = 0; // Reset counter if there's activity
+        }
+        last_dma_count_ecu = current_dma_count_ecu;
+
+        // Check Vehicle stream
+        uint32_t current_dma_count_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
+        if (current_dma_count_vehicle == last_dma_count_vehicle) {
+            stall_count_vehicle++;
+        } else {
+            stall_count_vehicle = 0; // Reset counter if there's activity
+        }
+        last_dma_count_vehicle = current_dma_count_vehicle;
+
+        // If either stream has stalled for too long, reset the whole streamer
+        // char *fmt_str = "Core1: DMA stall detected on %s. Resetting streamer...\n";
+        if (stall_count_ecu > 10) { // ~100ms timeout
+            // printf(fmt_str, "ECU");
+            reset_streamer(STREAMER_SM_ECU);
+            stall_count_ecu = 0; 
+        }
+        if (stall_count_vehicle > 10) { // ~100ms timeout
+            // printf(fmt_str, "VEHICLE");
+            reset_streamer(STREAMER_SM_VEHICLE);
+            stall_count_vehicle = 0;
+        }
     }
 }
 
-int main()
-{
+void setup_pins() {
+    gpio_init(BGE_PIN);
+    gpio_set_dir(BGE_PIN, GPIO_OUT);
+    gpio_put(BGE_PIN, 1);
+
     gpio_init(STBN_PIN);
     gpio_set_dir(STBN_PIN, GPIO_OUT);
     gpio_put(STBN_PIN, 1);
@@ -90,6 +131,11 @@ int main()
     gpio_set_dir(RXD_FROM_VEHICLE_PIN, GPIO_IN);
     gpio_pull_up(RXD_FROM_ECU_PIN);
     gpio_pull_up(RXD_FROM_VEHICLE_PIN);
+}
+
+int main()
+{
+    setup_pins();
 
     bool clock_configured = set_sys_clock_khz(100000, false);
     stdio_init_all();

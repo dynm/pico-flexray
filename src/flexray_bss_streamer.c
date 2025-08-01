@@ -19,6 +19,11 @@ uint dma_rearm_chan;
 uint dma_control_chan; // New: for automatic buffer switching
 static uint32_t rearm_data;
 
+// --- Global Config for Reset ---
+static PIO streamer_pio;
+static uint streamer_sm_from_ecu;
+static uint streamer_sm_from_vehicle;
+
 // Ping-pong buffers, max payload is 254, 8 bytes for header and trailer
 volatile uint8_t capture_buffer_a[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
 volatile uint8_t capture_buffer_b[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
@@ -64,14 +69,62 @@ void streamer_irq0_handler()
     dma_channel_set_trans_count(dma_data_from_vehicle_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
 }
 
+
+void reset_streamer(uint index) {
+    PIO pio;
+    uint sm;
+    uint dma_chan;
+
+    switch (index) {
+        case STREAMER_SM_ECU:
+            pio = streamer_pio;
+            sm = streamer_sm_from_ecu;
+            dma_chan = dma_data_from_ecu_chan;
+            break;
+        case STREAMER_SM_VEHICLE:
+            pio = streamer_pio;
+            sm = streamer_sm_from_vehicle;
+            dma_chan = dma_data_from_vehicle_chan;
+            break;
+        default:
+            return;
+    }
+    // Abort existing DMA transfers
+    dma_channel_abort(dma_chan);
+
+    // Disable state machines
+    pio_sm_set_enabled(pio, sm, false);
+
+    // Restart the state machines
+    // This will clear their internal state and FIFO
+    pio_sm_restart(pio, sm);
+
+    // Re-configure DMA channels to point back to the start of the buffers
+    // this will cause data corruption occasionally, but it's better than not resetting at all
+    dma_channel_set_write_addr(dma_chan, buffer_addresses[1 - current_buffer_index], false);
+
+    // Set transfer counts and re-trigger
+    dma_channel_set_trans_count(dma_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
+
+    // Re-enable state machines
+    pio_sm_set_enabled(pio, sm, true);
+}
+
 void setup_stream(PIO pio,
                   uint rx_pin_from_ecu, uint tx_en_pin_to_vehicle,
                   uint rx_pin_from_vehicle, uint tx_en_pin_to_ecu)
 {
+    // --- Store PIO and SM for reset ---
+    streamer_pio = pio;
+
     // --- PIO Setup ---
     uint offset = pio_add_program(pio, &flexray_bss_streamer_program);
     uint sm_from_ecu = pio_claim_unused_sm(pio, true);
     uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
+
+    streamer_sm_from_ecu = sm_from_ecu;
+    streamer_sm_from_vehicle = sm_from_vehicle;
+
     flexray_bss_streamer_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_en_pin_to_vehicle);
     flexray_bss_streamer_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_en_pin_to_ecu);
     dma_data_from_ecu_chan = dma_claim_unused_channel(true);

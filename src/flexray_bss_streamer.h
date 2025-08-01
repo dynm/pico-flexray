@@ -5,6 +5,9 @@
 #include "hardware/pio.h"
 #include "flexray_frame.h"
 
+#define STREAMER_SM_ECU 0
+#define STREAMER_SM_VEHICLE 1
+
 // --- Global State ---
 extern uint dma_data_from_ecu_chan;
 extern uint dma_data_from_vehicle_chan;
@@ -25,5 +28,6 @@ void streamer_irq0_handler(void);
 void setup_stream(PIO pio,
                   uint rx_pin_from_ecu, uint tx_en_pin_to_vehicle,
                   uint rx_pin_from_vehicle, uint tx_en_pin_to_ecu);
+void reset_streamer(uint index);
 
 #endif // FLEXRAY_BSS_STREAMER_H 
