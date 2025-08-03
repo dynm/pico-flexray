@@ -117,7 +117,7 @@ bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame)
     // Byte 0 & 1: Assemble the 11-bit Frame ID (Big-Endian)
     // Frame ID High 3 bits from Byte 0, Low 8 bits are all of Byte 1
     parsed_frame->frame_id = ((uint16_t)(header[0] & 0x07) << 8) | header[1];
-    parsed_frame->source = raw_buffer[MAX_FRAME_BUF_SIZE_BYTES - 1];
+    parsed_frame->source = raw_buffer[FRAME_BUF_SIZE_BYTES - 1];
 
     // Byte 2: Payload Length and Header CRC MSB
     parsed_frame->payload_length_words = (header[2] >> 1) & 0x7F; // 7 bits

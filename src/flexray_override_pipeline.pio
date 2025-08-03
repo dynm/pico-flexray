@@ -71,19 +71,23 @@ mismatch:
 
 .program flexray_forwarder
 .wrap_target
-entry_point:
-    jmp pin, forward_loop
-inject_loop:
-    set pins, 1 [9]
-    set pins, 0 [9]
-    set x, 7
-out_1_byte:
-    out pins, 1 [8]
-    jmp x-- out_1_byte  
-    jmp entry_point
-forward_loop:
-    mov pins, pins
-    mov osr, null [7]
+mov pins, pins
+; wait 1 pin 0 ; wait for idle
+; wait 0 pin 0 ; wait for falling edge of tss
+; entry_point:
+;     jmp forward_loop
+; inject_loop:
+;     set pins, 1 [9]
+;     set pins, 0 [9]
+;     set x, 7
+; out_1_byte:
+;     out pins, 1 [8]
+;     jmp x-- out_1_byte  
+;     jmp entry_point
+; forward_loop:
+;     mov pins, pins
+;     mov osr, null [6]
+;     jmp entry_point
 .wrap
 
 % c-sdk {

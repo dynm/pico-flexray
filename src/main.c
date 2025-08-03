@@ -30,13 +30,13 @@
 #define BGE_PIN 2
 #define STBN_PIN 3
 
-#define RXD_FROM_ECU_PIN 4
-#define TXD_TO_ECU_PIN 5
-#define TXEN_TO_ECU_PIN 6
+#define TXD_TO_ECU_PIN 4
+#define TXEN_TO_ECU_PIN 5
+#define RXD_FROM_ECU_PIN 6
 
-#define RXD_FROM_VEHICLE_PIN 28
-#define TXD_TO_VEHICLE_PIN 27
-#define TXEN_TO_VEHICLE_PIN 26
+#define TXD_TO_VEHICLE_PIN 28
+#define TXEN_TO_VEHICLE_PIN 27
+#define RXD_FROM_VEHICLE_PIN 26
 
 // -- Injector Pins, do not connect physical pins to these --
 #define INJECT_SWITCH_TO_ECU_PIN 20 
@@ -72,6 +72,7 @@ void core1_entry() {
     uint32_t last_dma_count_vehicle = 0;
     int stall_count_ecu = 0;
     int stall_count_vehicle = 0;
+
 
     while (1) {
         sleep_ms(10); // Check every 10ms
@@ -116,7 +117,7 @@ void setup_pins() {
 
     gpio_init(STBN_PIN);
     gpio_set_dir(STBN_PIN, GPIO_OUT);
-    gpio_put(STBN_PIN, 1);
+    gpio_put(STBN_PIN, 1); 
 
     gpio_pull_up(TXEN_TO_ECU_PIN);
     gpio_pull_up(TXEN_TO_VEHICLE_PIN);

@@ -157,6 +157,7 @@ void setup_stream(PIO pio,
 
     dma_channel_start(dma_data_from_ecu_chan);
     dma_channel_start(dma_data_from_vehicle_chan);
+    pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_from_ecu, true);
     pio_sm_set_enabled(pio, sm_from_vehicle, true);
 }
