@@ -17,7 +17,7 @@ void flexray_replay_q8_frame_program_init(PIO pio, uint sm, uint offset, uint pi
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000);
     sm_config_set_clkdiv(&c, div);
     // Set the output shift direction to right, with autopull enabled, and a pull threshold of 32 bits.
-    sm_config_set_out_shift(&c, true, true, 32);
+    sm_config_set_out_shift(&c, false, true, 32);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);

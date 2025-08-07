@@ -21,3 +21,16 @@ in:
 
 out:
     1. raw_flexray_txd
+
+PIO 1
+----------------
+1 matcher X
+1 forwarder X
+1 injector X
+1 forwarder Y
+
+
+PIO 2
+----------------
+1 injector Y
+1 matcher Y

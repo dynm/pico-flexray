@@ -180,6 +180,5 @@ bool is_valid_frame(flexray_frame_t *frame, const uint8_t *raw_buffer)
     {
         return false;
     }
-
     return check_frame_crc(frame, raw_buffer);
 }

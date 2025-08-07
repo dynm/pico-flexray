@@ -27,7 +27,7 @@ static uint streamer_sm_from_vehicle;
 // Ping-pong buffers, max payload is 254, 8 bytes for header and trailer
 volatile uint8_t capture_buffer_a[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
 volatile uint8_t capture_buffer_b[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
-
+volatile uint8_t irq_counter = 0;
 // Address table for automatic buffer switching
 volatile void *buffer_addresses[2] = {
     capture_buffer_a,
@@ -36,27 +36,32 @@ volatile void *buffer_addresses[2] = {
 // Current buffer index (for CPU to know which buffer was just filled)
 volatile uint32_t current_buffer_index = 0;
 
-// Debug counter for interrupt handler
-volatile uint32_t irq_handler_call_count = 0;
-
 // This is the DMA interrupt handler, which is much more efficient.
 void streamer_irq0_handler()
 {
     // The interrupt is on PIO0's IRQ 0. We must clear this specific interrupt flag.
     // The previous code was using a system-level IRQ number, which is incorrect for this function.
     pio_interrupt_clear(pio0, 3);
-    irq_handler_call_count++;
 
     uint32_t transfer_remaining_from_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
     uint32_t transfer_remaining_from_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
-    if (transfer_remaining_from_ecu != MAX_FRAME_BUF_SIZE_BYTES) // from ecu transferred
+    // Determine which channel triggered the interrupt by seeing which one transferred more data.
+    // A channel that was aborted mid-frame will have transferred fewer bytes than
+    // a channel that completed a frame (even with the extra word from 'push').
+    if (transfer_remaining_from_ecu < transfer_remaining_from_vehicle)
     {
-        ((uint8_t *)buffer_addresses[current_buffer_index])[MAX_FRAME_BUF_SIZE_BYTES - 1] = FROM_ECU;
+        // ECU channel has fewer bytes remaining, so it transferred more. It's the source.
+        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_ECU;
     }
-    if (transfer_remaining_from_vehicle != MAX_FRAME_BUF_SIZE_BYTES) // from vehicle transferred
+    else if (transfer_remaining_from_ecu > transfer_remaining_from_vehicle)
     {
-        ((uint8_t *)buffer_addresses[current_buffer_index])[MAX_FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
+        // Vehicle channel transferred more (or they are equal, assuming only one triggers at a time).
+        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
     }
+
+    // ((uint8_t *)buffer_addresses[current_buffer_index])[6] = irq_counter;
+    // irq_counter++;
+
     multicore_fifo_push_timeout_us(current_buffer_index, 0);
 
     dma_channel_abort(dma_data_from_ecu_chan);

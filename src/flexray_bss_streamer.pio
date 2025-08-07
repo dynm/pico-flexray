@@ -32,7 +32,8 @@ is_high:
     wait 0 pin 0             ; wait for TSS low
     wait 0 irq 7             ; wait for lock
     irq set 7                ; acquire lock and enable tx_en
-    ; this will make a glitch on tx_en if irq cleared by another SM.
+    ; this will make a 780ns glitch on tx_en if irq cleared by another SM.
+    ; this tx_en glich is acceptable because it is happend on bus idle.
     wait 1 pin 0     [6]  side 0   ;  wait for FSS high
     set x, BSS_SEARCH_TIMEOUT  [2] ; 6+1+2=9, skip 1 bit of FSS high
 
@@ -54,6 +55,7 @@ sample_byte_loop:
     mov pins, pins   [6]           ; Transfer bits to detector.
     jmp y-- sample_byte_loop [1]
 
+; jmp find_bss_falling_edge_loop
 bss_stall_low_detection_loop:
     set x, BSS_SEARCH_TIMEOUT   ; Reuse the timeout counter.
 wait_bss_high_loop:             ; Avoid stall by low pin.
@@ -61,7 +63,8 @@ wait_bss_high_loop:             ; Avoid stall by low pin.
     jmp x-- wait_bss_high_loop  ; Otherwise, decrement counter and re-check.
                                 ; If we timeout, the bus is stuck low. Abort.
 frame_end:
-    push noblock   ; reset isr counter
+    wait 1 pin 0   ; wait for idle, fix for DTS tx_en pull up too early
+    mov isr, null   ; reset isr counter
     irq set 3      ; notify DMA
     irq clear 7    ; release lock
 .wrap

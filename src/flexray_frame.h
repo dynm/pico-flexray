@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define FLEXRAY_FIFO_SIZE 32
+#define FLEXRAY_FIFO_SIZE 256
 
 #define MAX_FRAME_PAYLOAD_BYTES 64
 #define FRAME_BUF_SIZE_BYTES 8 + MAX_FRAME_PAYLOAD_BYTES

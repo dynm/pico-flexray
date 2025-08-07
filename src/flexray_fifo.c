@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 void flexray_fifo_init(flexray_fifo_t *fifo) {
-    memset(fifo, 0, sizeof(flexray_fifo_t));
+    memset(fifo, 0, sizeof(*fifo));
     printf("FlexRay FIFO initialized\n");
 }
 
@@ -24,12 +24,9 @@ uint32_t flexray_fifo_count(const flexray_fifo_t *fifo) {
 }
 
 bool flexray_fifo_push(flexray_fifo_t *fifo, const flexray_frame_t *frame) {
-    uint32_t primask = save_and_disable_interrupts();
-
     if (flexray_fifo_is_full(fifo)) {
         // FIFO is full, drop the incoming frame.
         fifo->stats.frames_dropped++;
-        restore_interrupts(primask);
         return false;
     }
 
@@ -37,15 +34,11 @@ bool flexray_fifo_push(flexray_fifo_t *fifo, const flexray_frame_t *frame) {
     fifo->write_pos = (fifo->write_pos + 1) % FLEXRAY_FIFO_SIZE;
     fifo->stats.total_frames_received++;
     
-    restore_interrupts(primask);
     return true;
 }
 
 bool flexray_fifo_pop(flexray_fifo_t *fifo, flexray_frame_t *frame) {
-    uint32_t primask = save_and_disable_interrupts();
-
     if (flexray_fifo_is_empty(fifo)) {
-        restore_interrupts(primask);
         return false; // FIFO empty
     }
 
@@ -53,12 +46,9 @@ bool flexray_fifo_pop(flexray_fifo_t *fifo, flexray_frame_t *frame) {
     fifo->read_pos = (fifo->read_pos + 1) % FLEXRAY_FIFO_SIZE;
     fifo->stats.frames_transmitted++;
     
-    restore_interrupts(primask);
     return true;
 }
 
 void flexray_fifo_get_stats(const flexray_fifo_t *fifo, fifo_stats_t *stats) {
-    uint32_t primask = save_and_disable_interrupts();
     memcpy(stats, &fifo->stats, sizeof(fifo_stats_t));
-    restore_interrupts(primask);
-} 
+}

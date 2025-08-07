@@ -11,6 +11,7 @@ PANDA_VID = 0x3801
 PANDA_PID = 0xddcc
 
 TARGET_ENDPOINT = 0x81
+CSV_BUFFER_SIZE = 100 # Batch write to CSV every 100 records
 
 '''
 typedef struct
@@ -162,6 +163,7 @@ def read_and_parse_data_continuously(dev, csv_writer):
     print("=" * 80)
 
     data_buffer = b''
+    csv_buffer = []
     total_frames = 0
     start_time = time.time()
 
@@ -175,9 +177,10 @@ def read_and_parse_data_continuously(dev, csv_writer):
             frames_found_in_batch = False
             try:
                 # Read data from endpoint
-                data = dev.read(TARGET_ENDPOINT, 512, timeout=1000)  # type: ignore
+                data = dev.read(TARGET_ENDPOINT, 16384, timeout=1000)  # type: ignore
                 if data:
                     data_buffer += bytes(data)
+                    batch_timestamp = datetime.now().isoformat()
 
                     # Process data in buffer
                     while len(data_buffer) >= struct_size:
@@ -186,7 +189,7 @@ def read_and_parse_data_continuously(dev, csv_writer):
                         if frame:
                             frames_found_in_batch = True
                             total_frames += 1
-                            timestamp = datetime.now().isoformat()
+                            timestamp = batch_timestamp
                             
                             payload_hex = frame['payload'].hex()
                             if len(payload_hex) > max_seen_payload_hex_len:
@@ -204,8 +207,12 @@ def read_and_parse_data_continuously(dev, csv_writer):
                                 payload_hex,
                                 f"0x{frame['frame_crc']:x}"
                             ]
-                            csv_writer.writerow(row)
+                            csv_buffer.append(row)
                             
+                            if len(csv_buffer) >= CSV_BUFFER_SIZE:
+                                csv_writer.writerows(csv_buffer)
+                                csv_buffer.clear()
+
                             # Update for real-time display
                             frame_id = frame['frame_id']
                             frame['timestamp'] = timestamp # Add timestamp for display
@@ -218,7 +225,6 @@ def read_and_parse_data_continuously(dev, csv_writer):
                             data_buffer = data_buffer[offset + struct_size:]
                         else:
                             # No valid frame found in current buffer.
-                            # 保留最后一部分数据，因为它可能是下一帧的开头。
                             if len(data_buffer) > struct_size:
                                 data_buffer = data_buffer[-(struct_size-1):]
                             break # Need more data to form a complete frame
@@ -273,6 +279,12 @@ def read_and_parse_data_continuously(dev, csv_writer):
         print(f"\n\nUser interrupted")
         
     finally:
+        # Write any remaining rows in the buffer
+        if csv_writer and csv_buffer:
+            csv_writer.writerows(csv_buffer)
+            print(f"Wrote {len(csv_buffer)} remaining records to CSV.")
+            csv_buffer.clear()
+
         elapsed = time.time() - start_time
         frame_rate = total_frames / elapsed if elapsed > 0 else 0
         print(f"\nFinal statistics:")

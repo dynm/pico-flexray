@@ -56,14 +56,14 @@ start_matching:
     mov y, osr
     jmp x!=y, mismatch
 match:
-    set pins, 1
-    wait 1 irq 1 ; wait for bss streamer stop
-    set pins, 0
+    irq set 5   ; pause forwarder
+    irq set 6 ; start injector
     jmp entry_point
 
 mismatch:
-    set pins, 0
-    wait 1 irq 1
+    irq clear 5   ; pause forwarder
+    irq clear 6   ; start injector
+
 .wrap
 
 
@@ -71,23 +71,22 @@ mismatch:
 
 .program flexray_forwarder
 .wrap_target
-mov pins, pins
-; wait 1 pin 0 ; wait for idle
-; wait 0 pin 0 ; wait for falling edge of tss
-; entry_point:
-;     jmp forward_loop
-; inject_loop:
-;     set pins, 1 [9]
-;     set pins, 0 [9]
-;     set x, 7
-; out_1_byte:
-;     out pins, 1 [8]
-;     jmp x-- out_1_byte  
-;     jmp entry_point
-; forward_loop:
-;     mov pins, pins
-;     mov osr, null [6]
-;     jmp entry_point
+    ; wait 0 irq 5 ; if no signal, just forward
+    mov pins, pins
+.wrap
+
+; --- Program 3: The Injector ---
+.program flexray_injector
+.wrap_target
+    wait 1 irq 6 ; if signal, inject
+inject_loop:
+    set pins, 1 [9]
+    set pins, 0 [9]
+    set x, 7
+out_1_byte:
+    out pins, 1 [8]
+    jmp x-- out_1_byte  
+    jmp !osre, inject_loop
 .wrap
 
 % c-sdk {
@@ -109,4 +108,23 @@ void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
 }
+
+void flexray_injector_program_init(PIO pio, uint sm, uint offset, uint tx_pin) {
+    pio_gpio_init(pio, tx_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
+
+    pio_sm_config c = flexray_injector_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, tx_pin, 1);
+
+    // Configure autopull to pull one 32-bit word from the TX FIFO when the OSR is empty.
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
 %}

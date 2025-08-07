@@ -417,7 +417,7 @@ static bool try_send_from_fifo(const char *context)
             {
                 // If write fails, re-queue the frame. This is a simplistic approach.
                 // A more robust implementation might handle this differently.
-                flexray_fifo_push(&flexray_fifo, &frame);
+                // flexray_fifo_push(&flexray_fifo, &frame);
                 break;
             }
         }
