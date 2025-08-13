@@ -250,7 +250,7 @@ int main()
             }
             else
             {
-                printf("Invalid frame: %d\n", frame.frame_id);
+                // printf("Invalid frame: %d\n", frame.frame_id);
             }
         }
     }
