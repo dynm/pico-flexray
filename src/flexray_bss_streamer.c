@@ -15,104 +15,137 @@
 // --- Global State ---
 uint dma_data_from_ecu_chan;
 uint dma_data_from_vehicle_chan;
-uint dma_rearm_chan;
-uint dma_control_chan; // New: for automatic buffer switching
-static uint32_t rearm_data;
+uint dma_rearm_ecu_chan;
+uint dma_rearm_vehicle_chan;
 
 // --- Global Config for Reset ---
 static PIO streamer_pio;
 static uint streamer_sm_from_ecu;
 static uint streamer_sm_from_vehicle;
 
-// Ping-pong buffers, max payload is 254, 8 bytes for header and trailer
-volatile uint8_t capture_buffer_a[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
-volatile uint8_t capture_buffer_b[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(32)));
-volatile uint8_t irq_counter = 0;
-// Address table for automatic buffer switching
-volatile void *buffer_addresses[2] = {
-    capture_buffer_a,
-    capture_buffer_b};
+// Ring-ready buffers per source, power-of-two sized and aligned (for circular DMA)
+// Sizes are defined in header
 
-// Current buffer index (for CPU to know which buffer was just filled)
+// DMA block size per data-channel before chaining to rearm
+#define DMA_BLOCK_COUNT_BYTES  (4096u)
+
+volatile uint8_t ecu_ring_buffer[ECU_RING_SIZE_BYTES] __attribute__((aligned(ECU_RING_SIZE_BYTES)));
+volatile uint8_t vehicle_ring_buffer[VEH_RING_SIZE_BYTES] __attribute__((aligned(VEH_RING_SIZE_BYTES)));
+volatile uint32_t irq_counter = 0;
+volatile uint32_t irq_handler_call_count = 0;
+// Keep existing buffer address indirection for current ping-pong logic
+volatile void *buffer_addresses[2] = {
+    (void *)ecu_ring_buffer,
+    (void *)vehicle_ring_buffer};
+
+// Current buffer index no longer used with ring; keep for compatibility if needed
 volatile uint32_t current_buffer_index = 0;
+
+static inline uint32_t dma_ring_write_idx(uint dma_chan, volatile uint8_t *ring_base, uint32_t ring_mask)
+{
+    uint32_t wa = dma_channel_hw_addr(dma_chan)->write_addr;
+    return (wa - (uint32_t)(uintptr_t)ring_base) & ring_mask;
+}
+
+// Track last-seen write indices to identify which DMA advanced at this IRQ
+static volatile uint32_t ecu_prev_write_idx = 0;
+static volatile uint32_t veh_prev_write_idx = 0;
+
+// --- Cross-core notification ring (single-producer ISR on core1, single-consumer on core0) ---
+#define NOTIFY_RING_SIZE 1024u
+static volatile uint32_t notify_ring[NOTIFY_RING_SIZE];
+static volatile uint16_t notify_head = 0; // producer writes head
+static volatile uint16_t notify_tail = 0; // consumer advances tail
+static volatile uint32_t notify_dropped = 0;
+
+void notify_queue_init(void)
+{
+    notify_head = 0;
+    notify_tail = 0;
+    notify_dropped = 0;
+}
+
+static inline bool notify_queue_push(uint32_t value)
+{
+    uint16_t head = notify_head;
+    uint16_t next = (uint16_t)((head + 1u) & (NOTIFY_RING_SIZE - 1u));
+    if (next == notify_tail)
+    {
+        notify_dropped++;
+        return false; // full
+    }
+    notify_ring[head] = value;
+    notify_head = next;
+    __sev(); // wake consumer after publishing head
+    return true;
+}
+
+bool notify_queue_pop(uint32_t *encoded)
+{
+    uint16_t tail = notify_tail;
+    if (tail == notify_head)
+    {
+        return false; // empty
+    }
+    *encoded = notify_ring[tail];
+    notify_tail = (uint16_t)((tail + 1u) & (NOTIFY_RING_SIZE - 1u));
+    return true;
+}
+
+uint32_t notify_queue_dropped(void)
+{
+    return notify_dropped;
+}
 
 // This is the DMA interrupt handler, which is much more efficient.
 void streamer_irq0_handler()
 {
-    // The interrupt is on PIO0's IRQ 0. We must clear this specific interrupt flag.
-    // The previous code was using a system-level IRQ number, which is incorrect for this function.
-    pio_interrupt_clear(pio0, 3);
+    irq_handler_call_count++;
+    // Clear PIO IRQ source
+    pio_interrupt_clear(streamer_pio, 3);
 
-    uint32_t transfer_remaining_from_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
-    uint32_t transfer_remaining_from_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
-    // Determine which channel triggered the interrupt by seeing which one transferred more data.
-    // A channel that was aborted mid-frame will have transferred fewer bytes than
-    // a channel that completed a frame (even with the extra word from 'push').
-    if (transfer_remaining_from_ecu < transfer_remaining_from_vehicle)
+    // Determine source by which DMA write index advanced since last IRQ
+    uint32_t ecu_idx_now = dma_ring_write_idx(dma_data_from_ecu_chan, ecu_ring_buffer, ECU_RING_MASK);
+    uint32_t veh_idx_now = dma_ring_write_idx(dma_data_from_vehicle_chan, vehicle_ring_buffer, VEH_RING_MASK);
+
+    bool ecu_advanced = (ecu_idx_now != ecu_prev_write_idx);
+    bool veh_advanced = (veh_idx_now != veh_prev_write_idx);
+
+    uint32_t idx = 0;
+    bool is_vehicle = false;
+
+    if (ecu_advanced && !veh_advanced)
     {
-        // ECU channel has fewer bytes remaining, so it transferred more. It's the source.
-        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_ECU;
+        idx = ecu_idx_now;
+        ecu_prev_write_idx = ecu_idx_now;
     }
-    else if (transfer_remaining_from_ecu > transfer_remaining_from_vehicle)
+    else if (!ecu_advanced && veh_advanced)
     {
-        // Vehicle channel transferred more (or they are equal, assuming only one triggers at a time).
-        ((uint8_t *)buffer_addresses[current_buffer_index])[FRAME_BUF_SIZE_BYTES - 1] = FROM_VEHICLE;
+        idx = veh_idx_now;
+        is_vehicle = true;
+        veh_prev_write_idx = veh_idx_now;
+    }
+    else
+    {
+        // Fallback: pick the one with larger delta (handles rare simultaneous cases)
+        uint32_t ecu_delta = (ecu_idx_now - ecu_prev_write_idx) & ECU_RING_MASK;
+        uint32_t veh_delta = (veh_idx_now - veh_prev_write_idx) & VEH_RING_MASK;
+        if (veh_delta > ecu_delta)
+        {
+            idx = veh_idx_now;
+            is_vehicle = true;
+            veh_prev_write_idx = veh_idx_now;
+        }
+        else
+        {
+            idx = ecu_idx_now;
+            ecu_prev_write_idx = ecu_idx_now;
+        }
     }
 
-    // ((uint8_t *)buffer_addresses[current_buffer_index])[6] = irq_counter;
-    // irq_counter++;
-
-    multicore_fifo_push_timeout_us(current_buffer_index, 0);
-
-    dma_channel_abort(dma_data_from_ecu_chan);
-    dma_channel_abort(dma_data_from_vehicle_chan);
-    current_buffer_index = 1 - current_buffer_index;
-
-    dma_channel_set_write_addr(dma_data_from_ecu_chan, buffer_addresses[current_buffer_index], false);
-    dma_channel_set_write_addr(dma_data_from_vehicle_chan, buffer_addresses[current_buffer_index], false);
-    dma_channel_set_trans_count(dma_data_from_ecu_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
-    dma_channel_set_trans_count(dma_data_from_vehicle_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
-}
-
-
-void reset_streamer(uint index) {
-    PIO pio;
-    uint sm;
-    uint dma_chan;
-
-    switch (index) {
-        case STREAMER_SM_ECU:
-            pio = streamer_pio;
-            sm = streamer_sm_from_ecu;
-            dma_chan = dma_data_from_ecu_chan;
-            break;
-        case STREAMER_SM_VEHICLE:
-            pio = streamer_pio;
-            sm = streamer_sm_from_vehicle;
-            dma_chan = dma_data_from_vehicle_chan;
-            break;
-        default:
-            return;
-    }
-    // Abort existing DMA transfers
-    dma_channel_abort(dma_chan);
-
-    // Disable state machines
-    pio_sm_set_enabled(pio, sm, false);
-
-    // Restart the state machines
-    // This will clear their internal state and FIFO
-    pio_sm_restart(pio, sm);
-
-    // Re-configure DMA channels to point back to the start of the buffers
-    // this will cause data corruption occasionally, but it's better than not resetting at all
-    dma_channel_set_write_addr(dma_chan, buffer_addresses[1 - current_buffer_index], false);
-
-    // Set transfer counts and re-trigger
-    dma_channel_set_trans_count(dma_chan, MAX_FRAME_BUF_SIZE_BYTES, true);
-
-    // Re-enable state machines
-    pio_sm_set_enabled(pio, sm, true);
+    // Encode: [31]=source(1=VEH), [30:12]=seq(19 bits), [11:0]=ring index (4KB ring)
+    uint32_t encoded = notify_encode(is_vehicle, ((irq_counter++) & 0x7FFFF), idx);
+    (void)notify_queue_push(encoded);
 }
 
 void setup_stream(PIO pio,
@@ -144,24 +177,73 @@ void setup_stream(PIO pio,
     channel_config_set_write_increment(&dma_c_from_vehicle, true);                           // Write to sequential buffer locations
     channel_config_set_dreq(&dma_c_from_ecu, pio_get_dreq(pio, sm_from_ecu, false));         // Paced by PIO RX
     channel_config_set_dreq(&dma_c_from_vehicle, pio_get_dreq(pio, sm_from_vehicle, false)); // Paced by PIO RX
+
+    // Configure write-address ring for continuous circular write
+    uint8_t ecu_ring_bits = 0;
+    if (ECU_RING_SIZE_BYTES > 1)
+    {
+        ecu_ring_bits = 32 - __builtin_clz(ECU_RING_SIZE_BYTES - 1);
+    }
+    channel_config_set_ring(&dma_c_from_ecu, true, ecu_ring_bits); // true = wrap write address
+
+    uint8_t veh_ring_bits = 0;
+    if (VEH_RING_SIZE_BYTES > 1)
+    {
+        veh_ring_bits = 32 - __builtin_clz(VEH_RING_SIZE_BYTES - 1);
+    }
+    channel_config_set_ring(&dma_c_from_vehicle, true, veh_ring_bits); // true = wrap write address
+    // Chain each data channel to its rearm channel
+    dma_rearm_ecu_chan = dma_claim_unused_channel(true);
+    dma_rearm_vehicle_chan = dma_claim_unused_channel(true);
+    channel_config_set_chain_to(&dma_c_from_ecu, dma_rearm_ecu_chan);
+    channel_config_set_chain_to(&dma_c_from_vehicle, dma_rearm_vehicle_chan);
+
+    // Configure data channels
     dma_channel_configure(dma_data_from_ecu_chan, &dma_c_from_ecu,
-                          capture_buffer_a,       // Destination: Buffer A
-                          &pio->rxf[sm_from_ecu], // Source: PIO RX FIFO
-                          MAX_FRAME_BUF_SIZE_BYTES,                     // Transfer count: 64 words (2048 bits)
-                          false                   // Don't start yet
-    );
+                          (void *)ecu_ring_buffer,       // Destination: ECU ring base
+                          &pio->rxf[sm_from_ecu],        // Source: PIO RX FIFO
+                          DMA_BLOCK_COUNT_BYTES,
+                          false);
     dma_channel_configure(dma_data_from_vehicle_chan, &dma_c_from_vehicle,
-                          capture_buffer_b,           // Destination: Buffer B
-                          &pio->rxf[sm_from_vehicle], // Source: PIO RX FIFO
-                          MAX_FRAME_BUF_SIZE_BYTES,                         // Transfer count: 64 words (2048 bits)
-                          false                       // Don't start yet
-    );
+                          (void *)vehicle_ring_buffer,   // Destination: VEHICLE ring base
+                          &pio->rxf[sm_from_vehicle],    // Source: PIO RX FIFO
+                          DMA_BLOCK_COUNT_BYTES,
+                          false);
+
+    // Configure rearm channels: write a 32-bit refill value to data channel's transfer_count_trig
+    static uint32_t ecu_refill_count = DMA_BLOCK_COUNT_BYTES;
+    static uint32_t veh_refill_count = DMA_BLOCK_COUNT_BYTES;
+
+    dma_channel_config rcfg_ecu = dma_channel_get_default_config(dma_rearm_ecu_chan);
+    channel_config_set_transfer_data_size(&rcfg_ecu, DMA_SIZE_32);
+    channel_config_set_read_increment(&rcfg_ecu, false);
+    channel_config_set_write_increment(&rcfg_ecu, false);
+    dma_channel_configure(
+        dma_rearm_ecu_chan,
+        &rcfg_ecu,
+        &dma_hw->ch[dma_data_from_ecu_chan].al1_transfer_count_trig, // dest
+        &ecu_refill_count,                                           // src
+        1,                                                           // write once
+        false);
+
+    dma_channel_config rcfg_veh = dma_channel_get_default_config(dma_rearm_vehicle_chan);
+    channel_config_set_transfer_data_size(&rcfg_veh, DMA_SIZE_32);
+    channel_config_set_read_increment(&rcfg_veh, false);
+    channel_config_set_write_increment(&rcfg_veh, false);
+    dma_channel_configure(
+        dma_rearm_vehicle_chan,
+        &rcfg_veh,
+        &dma_hw->ch[dma_data_from_vehicle_chan].al1_transfer_count_trig, // dest
+        &veh_refill_count,                                               // src
+        1,
+        false);
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
     irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
     irq_set_enabled(pio_get_irq_num(pio, 0), true);
 
     dma_channel_start(dma_data_from_ecu_chan);
     dma_channel_start(dma_data_from_vehicle_chan);
+    pio_interrupt_clear(pio, 3);
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_from_ecu, true);
     pio_sm_set_enabled(pio, sm_from_vehicle, true);

@@ -15,6 +15,6 @@ extern uint32_t replay_buffer[64];
  * @param pio The PIO instance (pio0 or pio1) to use for the replay state machine.
  * @param replay_pin The GPIO pin to use for transmitting the replay data.
  */
-uint setup_replay(PIO pio, uint replay_pin);
+void setup_replay(PIO pio, uint replay_pin);
 
 #endif // REPLAY_FRAME_H

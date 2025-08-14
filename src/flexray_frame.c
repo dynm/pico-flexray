@@ -155,6 +155,41 @@ bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame)
     return true;
 }
 
+bool parse_frame_from_slice(const uint8_t *raw_buffer, uint16_t slice_len, uint8_t source, flexray_frame_t *parsed_frame)
+{
+    if (!raw_buffer || !parsed_frame || slice_len < 8)
+    {
+        return false;
+    }
+    // Header
+    const uint8_t *header = raw_buffer;
+    parsed_frame->indicators = header[0] >> 3;
+    parsed_frame->frame_id = ((uint16_t)(header[0] & 0x07) << 8) | header[1];
+    parsed_frame->source = source;
+    parsed_frame->payload_length_words = (header[2] >> 1) & 0x7F;
+    if (parsed_frame->payload_length_words * 2 > MAX_FRAME_PAYLOAD_BYTES)
+    {
+        return false;
+    }
+    uint16_t crc_part1 = (uint16_t)(header[2] & 0x01) << 10;
+    uint16_t crc_part2 = (uint16_t)header[3] << 2;
+    uint16_t crc_part3 = (header[4] >> 6) & 0x03;
+    parsed_frame->header_crc = crc_part1 | crc_part2 | crc_part3;
+    parsed_frame->cycle_count = header[4] & 0x3F;
+
+    uint16_t expected_len = (uint16_t)(5 + (parsed_frame->payload_length_words * 2) + 3);
+    if (slice_len < expected_len)
+    {
+        return false;
+    }
+    memcpy(parsed_frame->payload, &raw_buffer[5], parsed_frame->payload_length_words * 2);
+    const uint8_t *crc_ptr = &raw_buffer[5 + (parsed_frame->payload_length_words * 2)];
+    parsed_frame->frame_crc = ((uint32_t)crc_ptr[0] << 16) |
+                              ((uint32_t)crc_ptr[1] << 8) |
+                              (uint32_t)crc_ptr[2];
+    return true;
+}
+
 void print_frame(flexray_frame_t *frame)
 {
     printf("%d,%d,%02X,%d,", frame->frame_id, frame->payload_length_words, frame->header_crc, frame->cycle_count);

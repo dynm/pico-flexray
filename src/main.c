@@ -14,6 +14,38 @@
 #include "hardware/xosc.h"
 #include "hardware/timer.h"
 #include "pico/multicore.h"
+#include <unistd.h>
+#include "hardware/regs/addressmap.h"
+
+extern char __end__;
+extern char __StackTop;
+extern char __StackLimit;
+
+static inline uintptr_t get_sp(void) {
+	uintptr_t sp;
+	__asm volatile ("mov %0, sp" : "=r"(sp));
+	return sp;
+}
+
+static void print_ram_usage(void) {
+	void *heap_end = sbrk(0);
+	uintptr_t sp = get_sp();
+
+	uintptr_t heap_start = (uintptr_t)&__end__;
+	uintptr_t stack_top = (uintptr_t)&__StackTop;
+	uintptr_t stack_limit = (uintptr_t)&__StackLimit;
+
+	size_t heap_used = (uintptr_t)heap_end - heap_start;
+	size_t stack_used = stack_top - sp;
+	size_t gap_heap_to_sp = sp - (uintptr_t)heap_end;   // remaining space between heap and sp
+	size_t stack_free = sp - stack_limit;               // remaining space in stack
+
+	printf("RAM usage: heap_used=%lu B, stack_used=%lu B, gap(heap->sp)=%lu B, stack_free=%lu B\n",
+	       (unsigned long)heap_used,
+	       (unsigned long)stack_used,
+	       (unsigned long)gap_heap_to_sp,
+	       (unsigned long)stack_free);
+}
 
 #include "flexray_override_pipeline.pio.h"
 #include "replay_frame.h"
@@ -38,32 +70,55 @@
 #define TXEN_TO_VEHICLE_PIN 27
 #define RXD_FROM_VEHICLE_PIN 26
 
-// -- Injector Pins, do not connect physical pins to these --
-#define INJECT_SWITCH_TO_ECU_PIN 20
-#define INJECT_SWITCH_TO_VEHICLE_PIN 21
-
 // Forward declaration for the Core 1 counter
 extern volatile uint32_t core1_sent_frame_count;
 
 void setup_forwarder(PIO pio,
-                     uint rx_pin_from_ecu, uint tx_pin_to_vehicle, uint inject_switch_to_vehicle,
-                     uint rx_pin_from_vehicle, uint tx_pin_to_ecu, uint inject_switch_to_ecu)
+                     uint rx_pin_from_ecu, uint tx_pin_to_vehicle,
+                     uint rx_pin_from_vehicle, uint tx_pin_to_ecu)
 {
     uint offset = pio_add_program(pio, &flexray_forwarder_program);
     uint sm_from_ecu = pio_claim_unused_sm(pio, true);
     uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
 
-    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle, inject_switch_to_vehicle);
-    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu, inject_switch_to_ecu);
+    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle);
+    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu);
 }
 
 void print_pin_assignments()
 {
     printf("Test Data Output Pin: %02d\n", REPLAY_TX_PIN);
+    printf("BGE Pin: %02d\n", BGE_PIN);
     printf("STBN Pin: %02d\n", STBN_PIN);
     printf("ECU Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FROM_ECU_PIN, TXD_TO_ECU_PIN, TXEN_TO_ECU_PIN);
     printf("VEH Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FROM_VEHICLE_PIN, TXD_TO_VEHICLE_PIN, TXEN_TO_VEHICLE_PIN);
-    printf("Injector Pins: ECU=%02d, VEH=%02d\n", INJECT_SWITCH_TO_ECU_PIN, INJECT_SWITCH_TO_VEHICLE_PIN);
+}
+
+typedef struct {
+    uint32_t total_notif;
+    uint32_t seq_gap;
+    uint32_t parsed_ok;
+    uint32_t valid;
+    uint32_t len_mismatch;
+    uint32_t len_ok;
+    uint32_t parse_fail;
+    uint32_t source_ecu;
+    uint32_t source_veh;
+    uint32_t overflow_len;
+    uint32_t zero_len;
+} stream_stats_t;
+
+static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t prev_valid)
+{
+    // Use number of parsed frames (len_ok) to represent total frames per second
+    uint32_t total_fps = (s->len_ok - prev_total) / 5; // 5s interval
+    uint32_t valid_fps = (s->valid - prev_valid) / 5;       // 5s interval
+
+    printf("Ring Stats: total=%lu seq_gap=%lu src[ECU=%lu,VEH=%lu] len_ok=%lu len_mis=%lu overflow=%lu zero=%lu parse_fail=%lu valid=%lu | fps[frames=%lu/s,valid=%lu/s]\n",
+           s->total_notif, s->seq_gap, s->source_ecu, s->source_veh,
+           s->len_ok, s->len_mismatch, s->overflow_len, s->zero_len,
+           s->parse_fail, s->valid, total_fps, valid_fps);
+    printf("Notify dropped=%lu\n", notify_queue_dropped());
 }
 
 void core1_entry()
@@ -72,55 +127,9 @@ void core1_entry()
                  RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN,
                  RXD_FROM_VEHICLE_PIN, TXEN_TO_ECU_PIN);
 
-    uint32_t last_dma_count_ecu = 0;
-    uint32_t last_dma_count_vehicle = 0;
-    int stall_count_ecu = 0;
-    int stall_count_vehicle = 0;
-
     while (1)
     {
-        // __wfi();
-        // continue;
-        sleep_ms(100); // Check every 10ms
-
-        // Check ECU stream
-        uint32_t current_dma_count_ecu = dma_channel_hw_addr(dma_data_from_ecu_chan)->transfer_count;
-        if (current_dma_count_ecu == last_dma_count_ecu)
-        {
-            stall_count_ecu++;
-        }
-        else
-        {
-            stall_count_ecu = 0; // Reset counter if there's activity
-        }
-        last_dma_count_ecu = current_dma_count_ecu;
-
-        // Check Vehicle stream
-        uint32_t current_dma_count_vehicle = dma_channel_hw_addr(dma_data_from_vehicle_chan)->transfer_count;
-        if (current_dma_count_vehicle == last_dma_count_vehicle)
-        {
-            stall_count_vehicle++;
-        }
-        else
-        {
-            stall_count_vehicle = 0; // Reset counter if there's activity
-        }
-        last_dma_count_vehicle = current_dma_count_vehicle;
-
-        // If either stream has stalled for too long, reset the whole streamer
-        // char *fmt_str = "Core1: DMA stall detected on %s. Resetting streamer...\n";
-        if (stall_count_ecu > 10)
-        { // ~100ms timeout
-            // printf(fmt_str, "ECU");
-            reset_streamer(STREAMER_SM_ECU);
-            stall_count_ecu = 0;
-        }
-        if (stall_count_vehicle > 10)
-        { // ~100ms timeout
-            // printf(fmt_str, "VEHICLE");
-            reset_streamer(STREAMER_SM_VEHICLE);
-            stall_count_vehicle = 0;
-        }
+        __wfi();
     }
 }
 
@@ -138,10 +147,6 @@ void setup_pins()
     gpio_pull_up(TXEN_TO_ECU_PIN);
     gpio_pull_up(TXEN_TO_VEHICLE_PIN);
 
-    // pull up inject switches, stop injecting
-    gpio_pull_up(INJECT_SWITCH_TO_ECU_PIN);
-    gpio_pull_up(INJECT_SWITCH_TO_VEHICLE_PIN);
-
     gpio_init(RXD_FROM_ECU_PIN);
     gpio_set_dir(RXD_FROM_ECU_PIN, GPIO_IN);
     gpio_init(RXD_FROM_VEHICLE_PIN);
@@ -157,17 +162,18 @@ void setup_pins()
     gpio_put(STBN_PIN, 1);
 }
 
-// uint8_t loop_counter = 0;
-
 int main()
 {
     setup_pins();
 
-    bool clock_configured = set_sys_clock_khz(100000, false);
+    bool clock_configured = set_sys_clock_khz(100000, true);
     stdio_init_all();
-
+    printf("static_used=%lu B\n", (unsigned long)((uintptr_t)&__end__ - (uintptr_t)SRAM_BASE));
+    print_ram_usage();
     // Initialize Panda USB interface
     panda_usb_init();
+    // Initialize cross-core notification queue before starting streams
+    notify_queue_init();
     // --- Set system clock to 100MHz (RP2350) ---
     // make PIO clock div has no fraction, reduce jitter
     if (!clock_configured)
@@ -176,7 +182,7 @@ int main()
     }
     else
     {
-        printf("System clock set to 100MHz\n");
+        printf("System clock set to 125MHz\n");
     }
 
     print_pin_assignments();
@@ -184,17 +190,22 @@ int main()
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
     printf("\n--- FlexRay Continuous Streaming Bridge (Forwarder Mode) ---\n");
 
-    uint dma_replay_chan = setup_replay(pio1, REPLAY_TX_PIN);
+    setup_replay(pio1, REPLAY_TX_PIN);
 
     multicore_launch_core1(core1_entry);
     sleep_ms(500);
     setup_forwarder(pio1,
-                    RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN, INJECT_SWITCH_TO_VEHICLE_PIN,
-                    RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN, INJECT_SWITCH_TO_ECU_PIN);
+                    RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN,
+                    RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN);
+
+    stream_stats_t stats = (stream_stats_t){0};
 
     uint8_t temp_buffer[MAX_FRAME_BUF_SIZE_BYTES];
 
     absolute_time_t next_stats_print_time = make_timeout_time_ms(5000);
+    // Track previous len_ok to compute parsed-frames FPS
+    uint32_t prev_total = 0;
+    uint32_t prev_valid = 0;
 
     while (true)
     {
@@ -202,57 +213,95 @@ int main()
         if (time_reached(next_stats_print_time))
         {
             next_stats_print_time = make_timeout_time_ms(5000);
-            // Check if USB is still mounted and working
-            if (!tud_mounted())
-            {
-                printf("USB not mounted, attempting recovery...\n");
-                // Force a complete USB reset
-                tud_disconnect();
-                sleep_ms(500);
-                tud_init(0);
-                sleep_ms(100);
-                printf("USB recovery attempt completed\n");
-            }
-            // panda_print_fifo_stats();
+            stats_print(&stats, prev_total, prev_valid);
+            prev_total = stats.len_ok;
+            prev_valid = stats.valid;
+            print_ram_usage();
         }
 
-        // check dma_replay_chan is stopped, restart it if it is
-        if (!dma_channel_is_busy(dma_replay_chan))
-        {
-            // To restart the DMA, we must reset its read address to the beginning
-            // of the buffer and then trigger it.
-            dma_channel_set_read_addr(dma_replay_chan, replay_buffer, true);
-        }
-        
-        uint32_t written_buffer_index;
-        uint32_t item_count = 0;
-        // Drain the fifo and only keep the last item
-        while (multicore_fifo_pop_timeout_us(0, &written_buffer_index))
-        {
-            item_count++;
-        }
+        // Consume frame-end notifications from core1 (encoded source+seq+ring index)
+        static uint16_t last_end_idx_ecu = 0;
+        static uint16_t last_end_idx_veh = 0;
+        static uint32_t last_seq = 0;
 
-        if (item_count > 0)
+        uint32_t encoded;
+        if (!notify_queue_pop(&encoded))
         {
-            // The last value of written_buffer_index is the most recent one.
-            memcpy(temp_buffer, (const void *)buffer_addresses[written_buffer_index], FRAME_BUF_SIZE_BYTES);
-            // sleep_ms(100);
-            // Parse the frame from the copied data
-            flexray_frame_t frame;
-            parse_frame(temp_buffer, &frame);
-            // frame.payload[0] = loop_counter;
-            // loop_counter++;
-            // Store the latest version of the frame in a snapshot array if it's valid
-            if (is_valid_frame(&frame, temp_buffer))
-            {
-                // push the frame to the FIFO
-                panda_flexray_fifo_push(&frame);
-            }
-            else
-            {
-                // printf("Invalid frame: %d\n", frame.frame_id);
-            }
+            // No pending notifications: keep USB serviced and wait
+            panda_usb_task();
+            __wfe();
+            continue;
         }
+        // Drain the queue including the first popped item
+        do {
+            notify_info_t info; notify_decode(encoded, &info);
+
+            stats.total_notif++;
+            if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x7FFFF) != 1) stats.seq_gap++;
+            last_seq = info.seq;
+            if (info.is_vehicle) stats.source_veh++; else stats.source_ecu++;
+
+            volatile uint8_t *ring_base = info.is_vehicle ? vehicle_ring_buffer : ecu_ring_buffer;
+            uint16_t ring_mask = info.is_vehicle ? VEH_RING_MASK : ECU_RING_MASK;
+            uint16_t prev_end = info.is_vehicle ? last_end_idx_veh : last_end_idx_ecu;
+            uint16_t len = (uint16_t)((info.end_idx - prev_end) & ring_mask);
+
+            if (len == 0 || len > MAX_FRAME_BUF_SIZE_BYTES)
+            {
+                // Update prev_end to avoid stalling if zero or oversized
+                if (info.is_vehicle) last_end_idx_veh = info.end_idx; else last_end_idx_ecu = info.end_idx;
+                if (len == 0) stats.zero_len++; else stats.overflow_len++;
+                continue;
+            }
+
+            // Copy [len] bytes ending at end_idx from ring (handle wrap)
+            uint16_t start = (uint16_t)((info.end_idx - len) & ring_mask);
+            uint16_t first = (uint16_t)((len <= (ring_mask + 1 - start)) ? len : (ring_mask + 1 - start));
+            memcpy(temp_buffer, (const void *)(ring_base + start), first);
+            if (first < len)
+            {
+                memcpy(temp_buffer + first, (const void *)ring_base, (size_t)(len - first));
+            }
+
+            // The chunk may contain multiple complete frames (e.g., if some notifications were missed).
+            // Iterate and parse frames sequentially within [0, len).
+            uint16_t pos = 0;
+            while ((uint16_t)(len - pos) >= 8)
+            {
+                uint8_t *header = temp_buffer + pos;
+                uint8_t payload_len_words = (header[2] >> 1) & 0x7F;
+                uint16_t expected_len = (uint16_t)(5 + (payload_len_words * 2) + 3);
+                if (expected_len == 0 || expected_len > FRAME_BUF_SIZE_BYTES) {
+                    stats.len_mismatch++;
+                    break;
+                }
+                if ((uint16_t)(len - pos) < expected_len) {
+                    // Incomplete tail (shouldn't happen since end_idx is on frame end), stop.
+                    break;
+                }
+
+                stats.len_ok++;
+
+                flexray_frame_t frame;
+                if (!parse_frame_from_slice(header, expected_len, info.is_vehicle ? FROM_VEHICLE : FROM_ECU, &frame))
+                {
+                    stats.parse_fail++;
+                    // Parse failed: resync by advancing 1 byte and retry
+                    pos = (uint16_t)(pos + 1);
+                    continue;
+                }
+                else if (is_valid_frame(&frame, header))
+                {
+                    stats.valid++;
+                    panda_flexray_fifo_push(&frame);
+                }
+
+                // Parsed (even if invalid CRC): consume this frame length
+                pos = (uint16_t)(pos + expected_len);
+            }
+
+            if (info.is_vehicle) last_end_idx_veh = info.end_idx; else last_end_idx_ecu = info.end_idx;
+        } while (notify_queue_pop(&encoded));
     }
 
     return 0;

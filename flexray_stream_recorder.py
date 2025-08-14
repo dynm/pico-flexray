@@ -1,4 +1,3 @@
-import struct
 import usb.core
 import usb.util
 import time
@@ -11,7 +10,13 @@ PANDA_VID = 0x3801
 PANDA_PID = 0xddcc
 
 TARGET_ENDPOINT = 0x81
-CSV_BUFFER_SIZE = 100 # Batch write to CSV every 100 records
+CSV_BUFFER_SIZE = 1000  # Batch write to CSV every 1000 records
+
+# High-throughput tuning
+READ_SIZE = 65536  # Maximize bulk IN size to reduce per-call overhead
+RAW_BENCH_MODE = False  # When True, skip CSV and per-frame hex, only count FPS
+STATS_INTERVAL_SEC = 1.0   # How often to print a brief stats line
+MIN_BODY_LEN = 11  # src(1) + header(5) + crc24(3) + minimal payload(0)
 
 '''
 typedef struct
@@ -28,110 +33,51 @@ typedef struct
     uint8_t payload[MAX_FRAME_PAYLOAD_BYTES];
 } flexray_frame_t;
 '''
-format_string = "IHHBBBB64s"
-struct_size = struct.calcsize(format_string)
+# Variable-length records: [u16 len_le][u8 src][5B header][payload][3B crc]
 
-def calculate_flexray_header_crc(frame):
+def parse_varlen_records(buffer, frames_out):
     """
-    Calculates the FlexRay header CRC based on the C implementation.
-    The frame parameter is a dictionary-like object with keys:
-    'indicators', 'frame_id', 'payload_length_words'.
+    Incrementally parse variable-length FlexRay records from an arbitrary byte buffer.
+    Returns the number of bytes consumed.
     """
-    data_word = 0
-    data_word |= int(frame['indicators']) << 19
-    data_word |= frame['frame_id'] << 7
-    data_word |= frame['payload_length_words']
-
-    crc = 0x1A
-    poly = 0x385
-
-    for i in range(19, -1, -1):
-        data_bit = (data_word >> i) & 1
-        crc_msb = (crc >> 10) & 1
-
-        crc <<= 1
-        if (data_bit ^ crc_msb):
-            crc ^= poly
-    
-    return crc & 0x7FF
-
-def calculate_flexray_full_crc(frame):
-    """
-    Calculates the FlexRay full CRC24 for the entire frame using plain bit calculation.
-    Reassembles the frame data from parsed components: 5-byte header + payload
-    Uses polynomial 0x5D6DCB and initial value 0xFEDCBA
-    """
-    crc = 0xFEDCBA
-    poly = 0x5D6DCB
-    
-    # Reassemble the 5-byte header according to FlexRay format
-    # Byte 0: indicators (5 bits) << 3 | frame_id highest 3 bits
-    byte0 = (frame['indicators'] << 3) | ((frame['frame_id'] >> 8) & 0x07)
-    
-    # Byte 1: frame_id lowest 8 bits
-    byte1 = frame['frame_id'] & 0xFF
-    
-    # Byte 2: payload_length_words (7 bits) << 1 | header_crc bit 10
-    byte2 = (frame['payload_length_words'] << 1) | ((frame['header_crc'] >> 10) & 0x01)
-    
-    # Byte 3: header_crc bits 9-2
-    byte3 = (frame['header_crc'] >> 2) & 0xFF
-    
-    # Byte 4: header_crc bits 1-0 << 6 | cycle_count (6 bits)
-    byte4 = ((frame['header_crc'] & 0x03) << 6) | (frame['cycle_count'] & 0x3F)
-    
-    # Create the data to calculate CRC over: header + payload
-    frame_data = bytes([byte0, byte1, byte2, byte3, byte4]) + frame['payload']
-    
-    # Calculate CRC over the assembled data
-    for byte_val in frame_data:
-        for bit in range(8):
-            data_bit = (byte_val >> (7 - bit)) & 1
-            crc_msb = (crc >> 23) & 1
-            
-            crc <<= 1
-            if data_bit ^ crc_msb:
-                crc ^= poly
-    
-    return crc & 0xFFFFFF
-
-
-def parse_frame(data):
-    unpacked = struct.unpack(format_string, data)
-    frame_dict = {
-        "frame_crc": unpacked[0],
-        "frame_id": unpacked[1],
-        "header_crc": unpacked[2],
-        "indicators": unpacked[3],
-        "payload_length_words": unpacked[4],
-        "cycle_count": unpacked[5],
-        "source": unpacked[6],
-        "payload": unpacked[7],
-    }
-    payload_len = frame_dict['payload_length_words'] * 2
-    frame_dict['payload'] = frame_dict['payload'][:payload_len]
-
-    calculated_crc = calculate_flexray_header_crc(frame_dict)
-    frame_dict['calculated_header_crc'] = calculated_crc
-    frame_dict['header_crc_valid'] = (calculated_crc == frame_dict['header_crc'])
-    if not frame_dict['header_crc_valid']:
-        return None
-    
-    calculated_frame_crc = calculate_flexray_full_crc(frame_dict)
-    frame_dict['calculated_frame_crc'] = calculated_frame_crc
-    frame_dict['frame_crc_valid'] = (calculated_frame_crc == frame_dict['frame_crc'])
-    if not frame_dict['frame_crc_valid']:
-        print(f"Frame CRC invalid: {frame_dict['frame_crc']} != {calculated_frame_crc}")
-        return None
-    
-    return frame_dict
-
-def try_parse_frame(data):
-    for i in range(0, len(data)-struct_size+1):
-        frame_dict = parse_frame(data[i:i+struct_size])
-        if frame_dict and frame_dict['header_crc_valid']:
-            return frame_dict, i
-    return None, -1
+    i = 0
+    buflen = len(buffer)
+    while i + 2 <= buflen:
+        body_len = buffer[i] | (buffer[i+1] << 8)
+        if body_len < MIN_BODY_LEN:
+            i += 1
+            continue
+        if i + 2 + body_len > buflen:
+            break
+        src = buffer[i+2]
+        header = buffer[i+3:i+8]
+        indicators = header[0] >> 3
+        frame_id = ((header[0] & 0x07) << 8) | header[1]
+        payload_len_words = (header[2] >> 1) & 0x7F
+        header_crc = ((header[2] & 0x01) << 10) | (header[3] << 2) | ((header[4] >> 6) & 0x03)
+        cycle_count = header[4] & 0x3F
+        payload_bytes = payload_len_words * 2
+        if 5 + payload_bytes + 3 != body_len - 1:
+            # length mismatch, skip one byte
+            i += 1
+            continue
+        payload = bytes(buffer[i+8:i+8+payload_bytes])
+        crc_bytes = buffer[i+8+payload_bytes:i+8+payload_bytes+3]
+        frame_crc = (crc_bytes[0] << 16) | (crc_bytes[1] << 8) | crc_bytes[2]
+        frames_out.append({
+            'source': src,
+            'indicators': indicators,
+            'frame_id': frame_id,
+            'payload_length_words': payload_len_words,
+            'header_crc': header_crc,
+            'cycle_count': cycle_count,
+            'payload': payload,
+            'frame_crc': frame_crc,
+            'header_crc_valid': True,
+            'frame_crc_valid': True,
+        })
+        i += 2 + body_len
+    return i
 
 def find_usb_device():
     print("Searching for USB device...")
@@ -144,7 +90,7 @@ def find_usb_device():
     
     print(f"Found device: {dev}")
     
-    # 设置配置
+    # device configuration
     try:
         if hasattr(dev, 'set_configuration'):
             dev.set_configuration()  # type: ignore
@@ -177,25 +123,24 @@ def read_and_parse_data_continuously(dev, csv_writer):
             frames_found_in_batch = False
             try:
                 # Read data from endpoint
-                data = dev.read(TARGET_ENDPOINT, 16384, timeout=1000)  # type: ignore
+                data = dev.read(TARGET_ENDPOINT, READ_SIZE, timeout=1000)  # type: ignore
                 if data:
                     data_buffer += bytes(data)
                     batch_timestamp = datetime.now().isoformat()
 
-                    # Process data in buffer
-                    while len(data_buffer) >= struct_size:
-                        frame, offset = try_parse_frame(data_buffer)
-                        
-                        if frame:
-                            frames_found_in_batch = True
-                            total_frames += 1
+                    # Process data in buffer using variable-length records
+                    frames = []
+                    consumed = parse_varlen_records(data_buffer, frames)
+                    if consumed > 0:
+                        data_buffer = data_buffer[consumed:]
+                    for frame in frames:
+                        frames_found_in_batch = True
+                        total_frames += 1
+                        if not RAW_BENCH_MODE:
                             timestamp = batch_timestamp
-                            
                             payload_hex = frame['payload'].hex()
                             if len(payload_hex) > max_seen_payload_hex_len:
                                 max_seen_payload_hex_len = len(payload_hex)
-                            
-                            # CSV Logging
                             row = [
                                 timestamp,
                                 frame['source'],
@@ -208,55 +153,24 @@ def read_and_parse_data_continuously(dev, csv_writer):
                                 f"0x{frame['frame_crc']:x}"
                             ]
                             csv_buffer.append(row)
-                            
                             if len(csv_buffer) >= CSV_BUFFER_SIZE:
                                 csv_writer.writerows(csv_buffer)
                                 csv_buffer.clear()
-
-                            # Update for real-time display
                             frame_id = frame['frame_id']
-                            frame['timestamp'] = timestamp # Add timestamp for display
+                            frame['timestamp'] = timestamp
                             if frame_id not in latest_frames:
                                 sorted_frame_ids.append(frame_id)
                                 sorted_frame_ids.sort()
                             latest_frames[frame_id] = frame
-                            
-                            # Remove parsed frame from buffer (including garbage data before it)
-                            data_buffer = data_buffer[offset + struct_size:]
-                        else:
-                            # No valid frame found in current buffer.
-                            if len(data_buffer) > struct_size:
-                                data_buffer = data_buffer[-(struct_size-1):]
-                            break # Need more data to form a complete frame
                 
                 # Rate limit screen updates
                 current_time = time.time()
-                if frames_found_in_batch and (current_time - last_display_time > 0.1): # Update ~10 times/sec
-                    # ANSI escape code to clear screen and move to top-left
-                    print("\033[H\033[J", end="")
-                    
-                    # Display Header
-                    header_line = f"{'Source':<10} | {'Frame ID':<10} | {'Timestamp':<28} | {'Cycle':<8} | {'Payload Words':<15} | {'Payload':<{max_seen_payload_hex_len}}"
-                    print(header_line)
-                    print("-" * len(header_line))
-
-                    # Display data for each slot
-                    for fid in sorted_frame_ids:
-                        f = latest_frames.get(fid)
-                        if f:
-                            payload_hex = f['payload'].hex()
-                            line = (
-                                f"{f['source']:<10} | "
-                                f"{f['frame_id']:<10} | "
-                                f"{f['timestamp']:<28} | "
-                                f"{f['cycle_count']:<8} | "
-                                f"{f['payload_length_words']:<15} | "
-                                f"{payload_hex:<{max_seen_payload_hex_len}}"
-                            )
-                            print(line)
-                    
-                    print("\n" + "=" * (len(header_line)))
-                    print(f"Total frames processed: {total_frames} | Frames/sec: {total_frames / (current_time - start_time):.1f}")
+                if frames_found_in_batch and (current_time - last_display_time > STATS_INTERVAL_SEC):
+                    fps = total_frames / (current_time - start_time)
+                    if RAW_BENCH_MODE:
+                        print(f"FPS(avg): {fps:.1f}")
+                    else:
+                        print(f"Frames processed: {total_frames} | FPS(avg): {fps:.1f} | Unique IDs: {len(sorted_frame_ids)}")
                     last_display_time = current_time
                 
             except usb.core.USBTimeoutError:
@@ -331,8 +245,4 @@ def main():
             print(f"\nLog file {csv_filename} closed.")
 
 if __name__ == "__main__":
-    data_hex_str = "57c0c1000c00580600111100000000000000000000000000000000000000000000000000000000000000000000000e408b630010286600100100000001000000b0a7a9156eeb6106fb250010"
-    data = bytes.fromhex(data_hex_str)
-    frame_dict = parse_frame(data)
-    print(f"frame_dict: {frame_dict}")
     main()

@@ -49,6 +49,14 @@ bool flexray_fifo_pop(flexray_fifo_t *fifo, flexray_frame_t *frame) {
     return true;
 }
 
+bool flexray_fifo_peek(const flexray_fifo_t *fifo, flexray_frame_t *frame) {
+    if (flexray_fifo_is_empty(fifo)) {
+        return false;
+    }
+    memcpy(frame, &fifo->frames[fifo->read_pos], sizeof(flexray_frame_t));
+    return true;
+}
+
 void flexray_fifo_get_stats(const flexray_fifo_t *fifo, fifo_stats_t *stats) {
     memcpy(stats, &fifo->stats, sizeof(fifo_stats_t));
 }

@@ -68,7 +68,6 @@
 
 void panda_usb_init(void);
 void panda_usb_task(void);
-void panda_print_fifo_stats(void);
 
 // FIFO management - now exposed for external use (e.g., main.c)
 bool panda_flexray_fifo_push(const flexray_frame_t *frame);

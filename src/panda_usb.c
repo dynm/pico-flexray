@@ -377,90 +377,98 @@ bool panda_flexray_fifo_push(const flexray_frame_t *frame)
 // Centralized function to trigger USB transmission from FIFO
 static bool try_send_from_fifo(const char *context)
 {
+    (void)context;
     if (!tud_vendor_mounted() || flexray_fifo_is_empty(&flexray_fifo))
     {
         return false;
     }
 
-    // Check if USB TX buffer has enough space for transmission
+    // Minimum record: 2-byte length + 1-byte source + 5-byte header + 0 payload + 3-byte CRC = 11 bytes
+    const uint32_t MIN_RECORD_SIZE = 11u;
+
     uint32_t available_space = tud_vendor_write_available();
-    if (available_space < sizeof(flexray_frame_t))
-    {                 // Need at least one packet size
-        return false; // Not enough space, don't send
+    if (available_space < MIN_RECORD_SIZE)
+    {
+        return false;
     }
 
-    // Send multiple packets if space allows (up to available buffer space)
     uint32_t total_sent = 0;
     bool sent_something = false;
 
-    while (available_space >= sizeof(flexray_frame_t) && !flexray_fifo_is_empty(&flexray_fifo))
+    while (!flexray_fifo_is_empty(&flexray_fifo))
     {
         flexray_frame_t frame;
-        if (flexray_fifo_pop(&flexray_fifo, &frame))
+        // Peek first to preserve order in case we cannot send now
+        if (!flexray_fifo_peek(&flexray_fifo, &frame))
         {
-            uint32_t bytes_written = tud_vendor_write(&frame, sizeof(flexray_frame_t));
-            if (bytes_written > 0)
-            {
-                total_sent += bytes_written;
-                sent_something = true;
-
-                // Update available space
-                available_space = tud_vendor_write_available();
-
-                // If we sent less than a full packet, this indicates end of data
-                if (bytes_written < sizeof(flexray_frame_t))
-                {
-                    break;
-                }
-            }
-            else
-            {
-                // If write fails, re-queue the frame. This is a simplistic approach.
-                // A more robust implementation might handle this differently.
-                // flexray_fifo_push(&flexray_fifo, &frame);
-                break;
-            }
+            break;
         }
-        else
+
+        uint16_t payload_len_bytes = (uint16_t)(frame.payload_length_words * 2u);
+        uint16_t body_len = (uint16_t)(1u /*source*/ + 5u /*header*/ + payload_len_bytes + 3u /*crc*/);
+        uint16_t total_len = (uint16_t)(2u /*len field*/ + body_len);
+
+        if (available_space < total_len)
         {
-            break; // No more data to send
+            // Not enough space for the head frame; stop and retry later
+            break;
+        }
+
+        // Build record into a small stack buffer and write once
+        uint8_t outbuf[2 + 1 + 5 + MAX_FRAME_PAYLOAD_BYTES + 3];
+        outbuf[0] = (uint8_t)(body_len & 0xFF);
+        outbuf[1] = (uint8_t)((body_len >> 8) & 0xFF);
+        size_t w = 2;
+        outbuf[w++] = frame.source;
+
+        // Reconstruct 5-byte header
+        uint8_t byte0 = (uint8_t)((frame.indicators << 3) | ((frame.frame_id >> 8) & 0x07));
+        uint8_t byte1 = (uint8_t)(frame.frame_id & 0xFF);
+        uint8_t byte2 = (uint8_t)((frame.payload_length_words << 1) | ((frame.header_crc >> 10) & 0x01));
+        uint8_t byte3 = (uint8_t)((frame.header_crc >> 2) & 0xFF);
+        uint8_t byte4 = (uint8_t)(((frame.header_crc & 0x03) << 6) | (frame.cycle_count & 0x3F));
+        outbuf[w++] = byte0;
+        outbuf[w++] = byte1;
+        outbuf[w++] = byte2;
+        outbuf[w++] = byte3;
+        outbuf[w++] = byte4;
+
+        // Payload (only used portion)
+        if (payload_len_bytes > 0)
+        {
+            memcpy(&outbuf[w], frame.payload, payload_len_bytes);
+            w += payload_len_bytes;
+        }
+
+        // 24-bit CRC big-endian
+        outbuf[w++] = (uint8_t)((frame.frame_crc >> 16) & 0xFF);
+        outbuf[w++] = (uint8_t)((frame.frame_crc >> 8) & 0xFF);
+        outbuf[w++] = (uint8_t)(frame.frame_crc & 0xFF);
+
+        // Write
+        uint32_t written = tud_vendor_write(outbuf, (uint32_t)w);
+        if (written != w)
+        {
+            // On partial write, stop loop; data will be retried next call
+            break;
+        }
+        // Now we can safely pop the frame since it has been fully queued to USB
+        (void)flexray_fifo_pop(&flexray_fifo, &frame);
+        sent_something = true;
+        total_sent += written;
+        available_space = tud_vendor_write_available();
+
+        // If buffer space drops low, flush early to free FIFO in USB core
+        if (available_space < MIN_RECORD_SIZE)
+        {
+            break;
         }
     }
 
     if (sent_something)
     {
-        uint32_t bytes_flushed = tud_vendor_write_flush();
-        // printf("%s: sent %lu bytes total, flushed %lu bytes (%lu available space remaining)\n",
-        //        context, total_sent, bytes_flushed, tud_vendor_write_available());
+        tud_vendor_write_flush();
         return true;
     }
-
     return false;
-}
-
-void panda_print_fifo_stats(void)
-{
-    fifo_stats_t stats;
-    flexray_fifo_get_stats(&flexray_fifo, &stats);
-    uint32_t count = flexray_fifo_count(&flexray_fifo);
-
-    printf("FlexRay FIFO Status:\n");
-    printf("  Available packets: %lu / %d\n", count, FLEXRAY_FIFO_SIZE);
-    printf("  FIFO utilization: %.1f%%\n",
-           (float)count / (FLEXRAY_FIFO_SIZE - 1) * 100.0f);
-
-    // Frame statistics
-    printf("Frame Statistics:\n");
-    printf("  Total received: %lu\n", stats.total_frames_received);
-    printf("  Transmitted: %lu\n", stats.frames_transmitted);
-    printf("  Dropped: %lu\n", stats.frames_dropped);
-    printf("  Pending: %lu\n", count);
-
-    if (stats.total_frames_received > 0)
-    {
-        printf("  Drop rate: %.2f%%\n",
-               (float)stats.frames_dropped / stats.total_frames_received * 100.0f);
-        printf("  Transmission rate: %.2f%%\n",
-               (float)stats.frames_transmitted / stats.total_frames_received * 100.0f);
-    }
 }

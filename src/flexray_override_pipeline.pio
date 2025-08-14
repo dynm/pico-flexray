@@ -91,7 +91,7 @@ out_1_byte:
 
 % c-sdk {
 
-void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin, uint inject_switch_pin) {
+void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin) {
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, tx_pin);
 
@@ -99,7 +99,6 @@ void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, 
     pio_sm_config c = flexray_forwarder_program_get_default_config(offset);
 
     sm_config_set_in_pins(&c, rx_pin);
-    sm_config_set_jmp_pin(&c, inject_switch_pin);
     sm_config_set_out_pins(&c, tx_pin, 1);
     // oversample by 10, 10MHz flexray bit rate, 100MHz clock
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
