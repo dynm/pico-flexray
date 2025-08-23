@@ -30,6 +30,11 @@ Refer to your board’s pinout for physical pad/header locations. Signals below 
 | 15 | `REPLAY_TX` | Output | Test | PIO replay/test sample FlexRay frame output
 
 ![Wiring diagram](imgs/wiring.png)
+**Note:**  
+You can use any FlexRay transceiver you have available. The following transceivers are pin-to-pin compatible and can be used interchangeably:
+- TLE9222
+- TJA1082
+- NCV7381
 
 
 ### Build and flash
