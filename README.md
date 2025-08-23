@@ -13,6 +13,7 @@ A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards 
 ### Hardware connections
 1. For read-only FlexRay frame capture, connect a single transceiver to the vehicle’s bus, attach its BP/BM lines to the FlexRay lines in your vehicle.
 2. To differentiate frames from the ECU and the vehicle, use a man-in-the-middle (MITM) setup: split the original FlexRay cable and connect each half to its own transceiver with separate BP/BM pairs—one transceiver for the ECU side, one for the vehicle side.
+3. To perform a test, connect the REPLAY_TX pin to either RXD_FROM_ECU or RXD_FROM_VEHICLE. This will allow you to observe frames in Cabana.
 
 Refer to your board’s pinout for physical pad/header locations. Signals below use Pico GPIO numbers as configured in `src/main.c`.
 
