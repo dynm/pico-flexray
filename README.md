@@ -11,7 +11,7 @@ A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards 
   - FlexRay MITM WIP
 
 ### Hardware connections
-1. To capture FlexRay frames passively, connect a single transceiver to either side of the bus and attach BP/BM to your vehicle’s FlexRay lines.
+1. For read-only FlexRay frame capture, connect a single transceiver to the vehicle’s bus, attach its BP/BM lines to the FlexRay lines in your vehicle.
 2. To differentiate frames from the ECU and the vehicle, use a man-in-the-middle (MITM) setup: split the original FlexRay cable and connect each half to its own transceiver with separate BP/BM pairs—one transceiver for the ECU side, one for the vehicle side.
 
 Refer to your board’s pinout for physical pad/header locations. Signals below use Pico GPIO numbers as configured in `src/main.c`.
