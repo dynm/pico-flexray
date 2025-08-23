@@ -1,6 +1,6 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dynm/pico-flexray)
 
-### pico_flexray — Low Cost FlexRay MITM Module
+### pico-flexray — Low Cost FlexRay MITM Module
 
 A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards frames between ECU and vehicle transceivers, with optional test replay output and a Panda-compatible USB interface.
 
@@ -11,6 +11,8 @@ A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards 
   - FlexRay MITM WIP
 
 ### Hardware connections
+1. To capture FlexRay frames passively, connect a single transceiver to either side of the bus and attach BP/BM to your vehicle’s FlexRay lines.
+2. To differentiate frames from the ECU and the vehicle, use a man-in-the-middle (MITM) setup: split the original FlexRay cable and connect each half to its own transceiver with separate BP/BM pairs—one transceiver for the ECU side, one for the vehicle side.
 
 Refer to your board’s pinout for physical pad/header locations. Signals below use Pico GPIO numbers as configured in `src/main.c`.
 
