@@ -52,6 +52,7 @@ static void print_ram_usage(void) {
 #include "flexray_frame.h"
 #include "panda_usb.h"
 #include "flexray_bss_streamer.h"
+#include "flexray_injector.h"
 
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
@@ -311,6 +312,8 @@ int main()
                 else if (is_valid_frame(&frame, header))
                 {
                     stats.valid++;
+                    // Cache validated frame (header + payload + CRC)
+                    try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
                     panda_flexray_fifo_push(&frame);
                 }
 

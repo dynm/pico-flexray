@@ -185,10 +185,8 @@ void streamer_irq0_handler()
         current_cycle_count = (uint8_t)(h4 & 0x3F);
         dma_channel_abort(dma_inject_chan);
 
-        // Non-volatile pointer to payload start (wrap-safe)
-        uint8_t *payload_ptr = (uint8_t *)(uintptr_t)&ring_base[(start_idx + 5) & ring_mask];
-        try_cache_last_target_frame(current_frame_id, current_cycle_count, payload_length, payload_ptr);
-        try_to_inject_frame(current_frame_id, current_cycle_count, payload_length);
+        // Caching moved to main loop after validation
+        try_to_inject_frame(current_frame_id, current_cycle_count);
     }
 
     // Encode: [31]=source(1=VEH), [30:12]=seq(19 bits), [11:0]=ring index (4KB ring)
@@ -198,10 +196,10 @@ void streamer_irq0_handler()
 
 // injection/cache functions are declared in flexray_injector.h and implemented in flexray_injector.c
 
-void inject_frame(uint16_t frame_id, uint8_t cycle_count, uint8_t payload_length)
+void inject_frame(uint16_t frame_id, uint8_t cycle_count, uint16_t injector_payload_length)
 {
     dma_channel_set_read_addr((uint)dma_inject_chan, (const void *)injector_payload, false);
-    dma_channel_set_trans_count((uint)dma_inject_chan, 7, true);
+    dma_channel_set_trans_count((uint)dma_inject_chan, injector_payload_length, true);
 }
 
 
