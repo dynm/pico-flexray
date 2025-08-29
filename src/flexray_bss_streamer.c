@@ -8,8 +8,11 @@
 #include "hardware/clocks.h"
 #include "pico/multicore.h"
 
+#include <string.h>
+
 #include "flexray_bss_streamer.pio.h"
 #include "flexray_bss_streamer.h"
+#include "flexray_injector.h"
 #include "flexray_frame.h"
 
 // --- Global State ---
@@ -27,7 +30,7 @@ static uint streamer_sm_from_vehicle;
 // Sizes are defined in header
 
 // DMA block size per data-channel before chaining to rearm
-#define DMA_BLOCK_COUNT_BYTES  (4096u)
+#define DMA_BLOCK_COUNT_BYTES  (4096u | 0x10000000) // self trigger
 
 volatile uint8_t ecu_ring_buffer[ECU_RING_SIZE_BYTES] __attribute__((aligned(ECU_RING_SIZE_BYTES)));
 volatile uint8_t vehicle_ring_buffer[VEH_RING_SIZE_BYTES] __attribute__((aligned(VEH_RING_SIZE_BYTES)));
@@ -37,6 +40,16 @@ volatile uint32_t irq_handler_call_count = 0;
 volatile void *buffer_addresses[2] = {
     (void *)ecu_ring_buffer,
     (void *)vehicle_ring_buffer};
+
+// DMA to write injector payload to PIO2 SM3 TX FIFO
+volatile int dma_inject_chan = -1;
+static uint32_t injector_payload[7] = {
+    23,
+    0xFFFF11FF, 0xFFFFFFFF, 0xFFFFF0F0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+};
+static dma_channel_config injector_dc;
+
+// injection/cache logic moved into flexray_injector.{h,c}
 
 // Current buffer index no longer used with ring; keep for compatibility if needed
 volatile uint32_t current_buffer_index = 0;
@@ -57,6 +70,10 @@ static volatile uint32_t notify_ring[NOTIFY_RING_SIZE];
 static volatile uint16_t notify_head = 0; // producer writes head
 static volatile uint16_t notify_tail = 0; // consumer advances tail
 static volatile uint32_t notify_dropped = 0;
+
+static volatile uint16_t current_frame_id = 0;
+static volatile uint8_t current_cycle_count = 0;
+static volatile uint8_t payload_length = 0;
 
 void notify_queue_init(void)
 {
@@ -100,6 +117,8 @@ uint32_t notify_queue_dropped(void)
 // This is the DMA interrupt handler, which is much more efficient.
 void streamer_irq0_handler()
 {
+    uint32_t start_idx = 0;
+
     irq_handler_call_count++;
     // Clear PIO IRQ source
     pio_interrupt_clear(streamer_pio, 3);
@@ -116,11 +135,13 @@ void streamer_irq0_handler()
 
     if (ecu_advanced && !veh_advanced)
     {
+        start_idx = ecu_prev_write_idx; // frame start for ECU stream
         idx = ecu_idx_now;
         ecu_prev_write_idx = ecu_idx_now;
     }
     else if (!ecu_advanced && veh_advanced)
     {
+        start_idx = veh_prev_write_idx; // frame start for VEH stream
         idx = veh_idx_now;
         is_vehicle = true;
         veh_prev_write_idx = veh_idx_now;
@@ -132,21 +153,57 @@ void streamer_irq0_handler()
         uint32_t veh_delta = (veh_idx_now - veh_prev_write_idx) & VEH_RING_MASK;
         if (veh_delta > ecu_delta)
         {
+            start_idx = veh_prev_write_idx;
             idx = veh_idx_now;
             is_vehicle = true;
             veh_prev_write_idx = veh_idx_now;
         }
         else
         {
+            start_idx = ecu_prev_write_idx;
             idx = ecu_idx_now;
             ecu_prev_write_idx = ecu_idx_now;
         }
+    }
+
+    // Fast-path: extract 5-byte header from ring buffer at start_idx
+    {
+        volatile uint8_t *ring_base = is_vehicle ? vehicle_ring_buffer : ecu_ring_buffer;
+        uint32_t ring_mask = is_vehicle ? VEH_RING_MASK : ECU_RING_MASK;
+
+        uint8_t h0 = ring_base[(start_idx + 0) & ring_mask];
+        uint8_t h1 = ring_base[(start_idx + 1) & ring_mask];
+        uint8_t h2 = ring_base[(start_idx + 2) & ring_mask];
+        uint8_t h3 = ring_base[(start_idx + 3) & ring_mask];
+        uint8_t h4 = ring_base[(start_idx + 4) & ring_mask];
+        (void)h3; // silence unused warnings; kept for clarity/extension
+
+        current_frame_id = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
+        // byte2 bits [7:1] hold payload_length_words (7 bits)
+        uint8_t payload_len_words = (uint8_t)((h2 >> 1) & 0x7F);
+        payload_length = (uint8_t)(payload_len_words * 2u); // bytes
+        current_cycle_count = (uint8_t)(h4 & 0x3F);
+        dma_channel_abort(dma_inject_chan);
+
+        // Non-volatile pointer to payload start (wrap-safe)
+        uint8_t *payload_ptr = (uint8_t *)(uintptr_t)&ring_base[(start_idx + 5) & ring_mask];
+        try_cache_last_target_frame(current_frame_id, current_cycle_count, payload_length, payload_ptr);
+        try_to_inject_frame(current_frame_id, current_cycle_count, payload_length);
     }
 
     // Encode: [31]=source(1=VEH), [30:12]=seq(19 bits), [11:0]=ring index (4KB ring)
     uint32_t encoded = notify_encode(is_vehicle, ((irq_counter++) & 0x7FFFF), idx);
     (void)notify_queue_push(encoded);
 }
+
+// injection/cache functions are declared in flexray_injector.h and implemented in flexray_injector.c
+
+void inject_frame(uint16_t frame_id, uint8_t cycle_count, uint8_t payload_length)
+{
+    dma_channel_set_read_addr((uint)dma_inject_chan, (const void *)injector_payload, false);
+    dma_channel_set_trans_count((uint)dma_inject_chan, 7, true);
+}
+
 
 void setup_stream(PIO pio,
                   uint rx_pin_from_ecu, uint tx_en_pin_to_vehicle,
@@ -203,48 +260,41 @@ void setup_stream(PIO pio,
                           (void *)ecu_ring_buffer,       // Destination: ECU ring base
                           &pio->rxf[sm_from_ecu],        // Source: PIO RX FIFO
                           DMA_BLOCK_COUNT_BYTES,
-                          false);
+                          true);
     dma_channel_configure(dma_data_from_vehicle_chan, &dma_c_from_vehicle,
                           (void *)vehicle_ring_buffer,   // Destination: VEHICLE ring base
                           &pio->rxf[sm_from_vehicle],    // Source: PIO RX FIFO
                           DMA_BLOCK_COUNT_BYTES,
-                          false);
+                          true);
 
     // Configure rearm channels: write a 32-bit refill value to data channel's transfer_count_trig
-    static uint32_t ecu_refill_count = DMA_BLOCK_COUNT_BYTES;
-    static uint32_t veh_refill_count = DMA_BLOCK_COUNT_BYTES;
+    // static uint32_t ecu_refill_count = DMA_BLOCK_COUNT_BYTES;
+    // static uint32_t veh_refill_count = DMA_BLOCK_COUNT_BYTES;
 
-    dma_channel_config rcfg_ecu = dma_channel_get_default_config(dma_rearm_ecu_chan);
-    channel_config_set_transfer_data_size(&rcfg_ecu, DMA_SIZE_32);
-    channel_config_set_read_increment(&rcfg_ecu, false);
-    channel_config_set_write_increment(&rcfg_ecu, false);
-    dma_channel_configure(
-        dma_rearm_ecu_chan,
-        &rcfg_ecu,
-        &dma_hw->ch[dma_data_from_ecu_chan].al1_transfer_count_trig, // dest
-        &ecu_refill_count,                                           // src
-        1,                                                           // write once
-        false);
 
-    dma_channel_config rcfg_veh = dma_channel_get_default_config(dma_rearm_vehicle_chan);
-    channel_config_set_transfer_data_size(&rcfg_veh, DMA_SIZE_32);
-    channel_config_set_read_increment(&rcfg_veh, false);
-    channel_config_set_write_increment(&rcfg_veh, false);
-    dma_channel_configure(
-        dma_rearm_vehicle_chan,
-        &rcfg_veh,
-        &dma_hw->ch[dma_data_from_vehicle_chan].al1_transfer_count_trig, // dest
-        &veh_refill_count,                                               // src
-        1,
-        false);
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
     irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
     irq_set_enabled(pio_get_irq_num(pio, 0), true);
 
-    dma_channel_start(dma_data_from_ecu_chan);
-    dma_channel_start(dma_data_from_vehicle_chan);
+    // dma_channel_start(dma_data_from_ecu_chan);
+    // dma_channel_start(dma_data_from_vehicle_chan);
     pio_interrupt_clear(pio, 3);
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_from_ecu, true);
     pio_sm_set_enabled(pio, sm_from_vehicle, true);
+
+    if (dma_inject_chan < 0)
+    {
+        dma_inject_chan = (int)dma_claim_unused_channel(true);
+    }
+    if (!dma_channel_is_busy((uint)dma_inject_chan))
+    {
+        injector_dc = dma_channel_get_default_config((uint)dma_inject_chan);
+        channel_config_set_transfer_data_size(&injector_dc, DMA_SIZE_32);
+        channel_config_set_read_increment(&injector_dc, true);
+        channel_config_set_write_increment(&injector_dc, false);
+        channel_config_set_dreq(&injector_dc, pio_get_dreq(pio2, 1, true)); // TX pacing
+        dma_channel_set_config((uint)dma_inject_chan, &injector_dc, false);        
+        dma_channel_set_write_addr((uint)dma_inject_chan, (void *)&pio2->txf[1], false);
+    }
 }

@@ -1,129 +1,76 @@
-; This PIO file contains two programs that work together as a pipeline to
-; implement a flexible "on-the-fly" FlexRay frame interceptor.
-;
-; This implementation is designed based on a two-channel requirement, where
-; each channel has a "sniffer" and a "muxer". This file provides the two
-; generic PIO programs. The main C code should instantiate two of each,
-; configuring the GPIOs appropriately for each channel.
-;
-; It uses IRQ for reliable synchronization between the sniffer and the muxer,
-; and adopts a 10-cycle-per-bit timing model, assuming a 100MHz system clock
-; for 10Mbit/s FlexRay communication.
+; --------------- Program 1: The Forwarder with Injector ---------------
 
-; 40 bit Header
-; TSS = Low for 5-15 bit, FSS = 01,BSS = 10
-; 10xxxxxFRA
-; 10MEIDIDID
+.program flexray_forwarder_with_injector
+.fifo tx
+.mov_status txfifo < 1
+.out 1 left auto 32
+.define public IDLE_COUNT 10
 
-; --- Program 1: The FrameID Matcher/Decoder ---
-; This program listens to a FlexRay bus, waits for a valid frame, decodes
-; its Frame ID, and compares it to a target ID pre-loaded by the CPU.
-; It signals its decision on a dedicated output pin for the muxer to read,
-; and uses an IRQ to synchronize the start of the process with the muxer.
-.program flexray_frameid_matcher
-.define public CYCLE_REPETITION_BITS_POW 2 ; 2bit lsb means 2**2, repeatevery 4 cycles
-; OVERRIDE_ENABLE output pin. 
-; RX input pin.
 .wrap_target
 entry_point:
-    mov isr, null
-    wait 1 irq 0 ; wait for bss streamer start
+    set pins, 1
+    mov x, status  ; check fifo, default recessive
+    ; when bus idle, the SM will stall on wait 0 pin 0,
+    ; if now the status get 0,
+    jmp !x, injector_mode ; if fifo is not empty, jump to injector mode
 
-set x, 4 ; skip 5 indicator bits
-skip_indicator_bits:
-    nop [8]
-    jmp x-- skip_indicator_bits
+; --------------------------- Forwarder Mode ---------------------------
+    wait 0 pin 0; wait recessive
+accept_fes:
+    set pins, 0
+dominant_state:
+    jmp pin, entry_point ; rising edge, back to main decision point
+    jmp dominant_state   ; keep recessive
 
-set x, 10 ; read 11 bits of ID
-read_frame_id:
-    in pins, 1 [8]
-    jmp x-- read_frame_id
+; --------------------------- Injector Mode ---------------------------
+; the path is activated on FSS rising edge,
+injector_mode:
+    ; when detect FSS rising edge
+    ; 1. jmp to entry_point
+    ; 2. set pins 1
+    ; 3,4. jmp injector_mode
+    pull               ; if any data remain in osr, discard it
+    out y, 32          ; first word is count
+    wait 0 pin 0     ; wait BSS low
+    set pins, 0
+    jmp skip_bss_high
 
-set x, 21 ; payload len(7) + crc(11) + cycle(6) - CYCLE_REPETITION_BITS_POW - 1
-advance_to_cycle_count_lsb:
-    nop [8]
-    jmp x-- advance_to_cycle_count_lsb
-
-set x, CYCLE_REPETITION_BITS_POW
-read_cycle_count_lsb:
-    in pins, 1 [8]
-    jmp x-- read_cycle_count_lsb
-; now the sampling phase shifted by 4 set instructions, very near to the next bit start
-
-start_matching:
-    mov x, isr
-    pull noblock
-    mov y, osr
-    jmp x!=y, mismatch
-match:
-    irq set 5   ; pause forwarder
-    irq set 6 ; start injector
-    jmp entry_point
-
-mismatch:
-    irq clear 5   ; pause forwarder
-    irq clear 6   ; start injector
-
-.wrap
-
-
-; --- Program 2: The Forwarder ---
-
-.program flexray_forwarder
-.wrap_target
-    ; wait 0 irq 5 ; if no signal, just forward
-    mov pins, pins
-.wrap
-
-; --- Program 3: The Injector ---
-.program flexray_injector
-.wrap_target
-    wait 1 irq 6 ; if signal, inject
 inject_loop:
-    set pins, 1 [9]
-    set pins, 0 [9]
-    set x, 7
+    set pins, 1 [8]
+    set pins, 0 [1]
+skip_bss_high:
+    set pins, 0 [6]
+    set x, 6
 out_1_byte:
     out pins, 1 [8]
     jmp x-- out_1_byte  
-    jmp !osre, inject_loop
+
+    out pins, 1 [7]
+    jmp y--, inject_loop
+    jmp accept_fes
 .wrap
-
 % c-sdk {
-
-void flexray_forwarder_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin) {
+void flexray_forwarder_with_injector_program_init(PIO pio, uint sm, uint offset, uint rx_pin, uint tx_pin) {
     // Now, let PIO take control of the pins.
     pio_gpio_init(pio, tx_pin);
-
+    pio_gpio_init(pio, rx_pin);
+    gpio_pull_up(tx_pin);
     pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
-    pio_sm_config c = flexray_forwarder_program_get_default_config(offset);
+    pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
+
+    pio_sm_config c = flexray_forwarder_with_injector_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, tx_pin, 1);
+    sm_config_set_out_pins(&c, tx_pin, 1);
 
     sm_config_set_in_pins(&c, rx_pin);
-    sm_config_set_out_pins(&c, tx_pin, 1);
-    // oversample by 10, 10MHz flexray bit rate, 100MHz clock
-    float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
-    sm_config_set_clkdiv(&c, div);
-    sm_config_set_in_shift(&c, false, true, 32); // BSS is MSB first, Shift left, autopush
-    pio_sm_init(pio, sm, offset, &c);
-    pio_sm_set_enabled(pio, sm, true);
-}
-
-void flexray_injector_program_init(PIO pio, uint sm, uint offset, uint tx_pin) {
-    pio_gpio_init(pio, tx_pin);
-    pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
-
-    pio_sm_config c = flexray_injector_program_get_default_config(offset);
-    sm_config_set_out_pins(&c, tx_pin, 1);
-
-    // Configure autopull to pull one 32-bit word from the TX FIFO when the OSR is empty.
-    sm_config_set_out_shift(&c, false, true, 32);
-    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
-
+    sm_config_set_jmp_pin(&c, rx_pin);
     float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
     sm_config_set_clkdiv(&c, div);
 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);
 }
+
 
 %}

@@ -73,16 +73,17 @@ static void print_ram_usage(void) {
 // Forward declaration for the Core 1 counter
 extern volatile uint32_t core1_sent_frame_count;
 
-void setup_forwarder(PIO pio,
-                     uint rx_pin_from_ecu, uint tx_pin_to_vehicle,
-                     uint rx_pin_from_vehicle, uint tx_pin_to_ecu)
-{
-    uint offset = pio_add_program(pio, &flexray_forwarder_program);
-    uint sm_from_ecu = pio_claim_unused_sm(pio, true);
-    uint sm_from_vehicle = pio_claim_unused_sm(pio, true);
 
-    flexray_forwarder_program_init(pio, sm_from_ecu, offset, rx_pin_from_ecu, tx_pin_to_vehicle);
-    flexray_forwarder_program_init(pio, sm_from_vehicle, offset, rx_pin_from_vehicle, tx_pin_to_ecu);
+void setup_forwarder_with_injector(PIO pio,
+    uint rx_pin_from_ecu, uint tx_pin_to_vehicle,
+    uint rx_pin_from_vehicle, uint tx_pin_to_ecu)
+{
+    uint offset = pio_add_program(pio, &flexray_forwarder_with_injector_program);
+    uint sm_from_ecu_to_vehicle = pio_claim_unused_sm(pio, true);
+    uint sm_from_vehicle_to_ecu = pio_claim_unused_sm(pio, true);
+
+    flexray_forwarder_with_injector_program_init(pio, sm_from_ecu_to_vehicle, offset, rx_pin_from_ecu, tx_pin_to_vehicle);
+    flexray_forwarder_with_injector_program_init(pio, sm_from_vehicle_to_ecu, offset, rx_pin_from_vehicle, tx_pin_to_ecu);
 }
 
 void print_pin_assignments()
@@ -107,6 +108,8 @@ typedef struct {
     uint32_t overflow_len;
     uint32_t zero_len;
 } stream_stats_t;
+
+uint8_t FRAME_CACHE[262][10];
 
 static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t prev_valid)
 {
@@ -194,9 +197,11 @@ int main()
 
     multicore_launch_core1(core1_entry);
     sleep_ms(500);
-    setup_forwarder(pio1,
-                    RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN,
-                    RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN);
+
+
+    setup_forwarder_with_injector(pio2,
+                                  RXD_FROM_ECU_PIN, TXD_TO_VEHICLE_PIN,
+                                  RXD_FROM_VEHICLE_PIN, TXD_TO_ECU_PIN);
 
     stream_stats_t stats = (stream_stats_t){0};
 
@@ -239,7 +244,11 @@ int main()
             stats.total_notif++;
             if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x7FFFF) != 1) stats.seq_gap++;
             last_seq = info.seq;
-            if (info.is_vehicle) stats.source_veh++; else stats.source_ecu++;
+            if (info.is_vehicle) {
+                stats.source_veh++;
+            } else {
+                stats.source_ecu++;
+            }
 
             volatile uint8_t *ring_base = info.is_vehicle ? vehicle_ring_buffer : ecu_ring_buffer;
             uint16_t ring_mask = info.is_vehicle ? VEH_RING_MASK : ECU_RING_MASK;
@@ -249,8 +258,17 @@ int main()
             if (len == 0 || len > MAX_FRAME_BUF_SIZE_BYTES)
             {
                 // Update prev_end to avoid stalling if zero or oversized
-                if (info.is_vehicle) last_end_idx_veh = info.end_idx; else last_end_idx_ecu = info.end_idx;
-                if (len == 0) stats.zero_len++; else stats.overflow_len++;
+                if (info.is_vehicle) {
+                    last_end_idx_veh = info.end_idx;
+                } else {
+                    last_end_idx_ecu = info.end_idx;
+                }
+                if (len == 0) 
+                {
+                    stats.zero_len++;
+                } else {
+                    stats.overflow_len++;
+                }
                 continue;
             }
 
@@ -300,7 +318,11 @@ int main()
                 pos = (uint16_t)(pos + expected_len);
             }
 
-            if (info.is_vehicle) last_end_idx_veh = info.end_idx; else last_end_idx_ecu = info.end_idx;
+            if (info.is_vehicle) {
+                last_end_idx_veh = info.end_idx;
+            } else {
+                last_end_idx_ecu = info.end_idx;
+            }
         } while (notify_queue_pop(&encoded));
     }
 

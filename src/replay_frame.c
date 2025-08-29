@@ -106,7 +106,7 @@ void setup_replay(PIO pio, uint replay_pin)
     flexray_replay_q8_frame_program_init(pio, sm, offset, replay_pin);
 
     uint dma_chan = dma_claim_unused_channel(true);
-    uint dma_replay_rearm_chan = dma_claim_unused_channel(true);
+    // uint dma_replay_rearm_chan = dma_claim_unused_channel(true);
     dma_channel_config dma_c = dma_channel_get_default_config(dma_chan);
 
     channel_config_set_transfer_data_size(&dma_c, DMA_SIZE_32);
@@ -122,8 +122,9 @@ void setup_replay(PIO pio, uint replay_pin)
         ring_size_log2 = 32 - __builtin_clz(buffer_size_bytes - 1);
     }
     channel_config_set_ring(&dma_c, false, ring_size_log2); // false = wrap read address
-    channel_config_set_chain_to(&dma_c, dma_replay_rearm_chan);
+    // channel_config_set_chain_to(&dma_c, dma_replay_rearm_chan);
 
+    buffer_words = buffer_words | 0x10000000; // rp2350's self trigger
     dma_channel_configure(
         dma_chan,
         &dma_c,
@@ -134,21 +135,21 @@ void setup_replay(PIO pio, uint replay_pin)
     );
 
     // Rearm channel: write TRANS_COUNT_TRIG only (count+trigger).
-    dma_channel_config rearm_c = dma_channel_get_default_config(dma_replay_rearm_chan);
-    channel_config_set_transfer_data_size(&rearm_c, DMA_SIZE_32);
-    channel_config_set_read_increment(&rearm_c, false);
-    channel_config_set_write_increment(&rearm_c, false);
-    channel_config_set_dreq(&rearm_c, DREQ_FORCE);
+    // dma_channel_config rearm_c = dma_channel_get_default_config(dma_replay_rearm_chan);
+    // channel_config_set_transfer_data_size(&rearm_c, DMA_SIZE_32);
+    // channel_config_set_read_increment(&rearm_c, false);
+    // channel_config_set_write_increment(&rearm_c, false);
+    // channel_config_set_dreq(&rearm_c, DREQ_FORCE);
 
-    static uint32_t refill_count;
-    refill_count = buffer_words; // number of 32-bit words per block
+    // static uint32_t refill_count;
+    // refill_count = buffer_words; // number of 32-bit words per block
 
-    dma_channel_configure(
-        dma_replay_rearm_chan,
-        &rearm_c,
-        (volatile void *)&dma_hw->ch[dma_chan].al1_transfer_count_trig, // dest: count+trigger of main channel
-        &refill_count,                                                  // src: constant transfer count
-        1,                                                              // one write per rearm
-        false                                                           // start by chain
-    );
+    // dma_channel_configure(
+    //     dma_replay_rearm_chan,
+    //     &rearm_c,
+    //     (volatile void *)&dma_hw->ch[dma_chan].al1_transfer_count_trig, // dest: count+trigger of main channel
+    //     &refill_count,                                                  // src: constant transfer count
+    //     1,                                                              // one write per rearm
+    //     false                                                           // start by chain
+    // );
 }

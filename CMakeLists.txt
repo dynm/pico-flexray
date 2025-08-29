@@ -42,6 +42,7 @@ add_executable(pico_flexray
      src/panda_usb.c
      src/usb_descriptors.c
      src/flexray_bss_streamer.c
+     src/flexray_injector.c
      src/flexray_fifo.c
      )
 
