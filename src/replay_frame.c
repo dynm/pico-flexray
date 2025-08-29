@@ -133,23 +133,4 @@ void setup_replay(PIO pio, uint replay_pin)
         buffer_words,           // Transfer count: one full buffer
         true                    // Start immediately
     );
-
-    // Rearm channel: write TRANS_COUNT_TRIG only (count+trigger).
-    // dma_channel_config rearm_c = dma_channel_get_default_config(dma_replay_rearm_chan);
-    // channel_config_set_transfer_data_size(&rearm_c, DMA_SIZE_32);
-    // channel_config_set_read_increment(&rearm_c, false);
-    // channel_config_set_write_increment(&rearm_c, false);
-    // channel_config_set_dreq(&rearm_c, DREQ_FORCE);
-
-    // static uint32_t refill_count;
-    // refill_count = buffer_words; // number of 32-bit words per block
-
-    // dma_channel_configure(
-    //     dma_replay_rearm_chan,
-    //     &rearm_c,
-    //     (volatile void *)&dma_hw->ch[dma_chan].al1_transfer_count_trig, // dest: count+trigger of main channel
-    //     &refill_count,                                                  // src: constant transfer count
-    //     1,                                                              // one write per rearm
-    //     false                                                           // start by chain
-    // );
 }
