@@ -34,7 +34,7 @@ Refer to your board’s pinout for physical pad/header locations. Signals below 
 You can use any FlexRay transceiver you have available. The following transceivers are pin-to-pin compatible and can be used interchangeably:
 - TLE9222
 - TJA1082
-- NCV7381
+- NCV7383
 
 
 ### Build and flash
