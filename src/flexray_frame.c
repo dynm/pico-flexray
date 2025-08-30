@@ -2,6 +2,8 @@
 #include "flexray_crc_table.h"
 #include <stdio.h>
 #include <string.h>
+#include "pico/platform/sections.h"
+
 
 static inline uint32_t get_bits_msb(const uint32_t *buffer, int start_bit_idx, int num_bits)
 {
@@ -55,32 +57,24 @@ static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer, const fl
     uint8_t tbl_idx = ((crc >> 7) & 0xF) ^ last_bits;
     crc = ((crc << 4) & 0x7FF) ^ flexray_crc11_4bit_table[tbl_idx];
 
-    // for (int i = 19; i >= 0; --i)
-    // {
-    //     bool data_bit = (data_word >> i) & 1;
-    //     bool crc_msb = (crc >> 10) & 1;
-
-    //     crc <<= 1;
-    //     if (data_bit ^ crc_msb)
-    //     {
-    //         crc ^= poly;
-    //     }
-    // }
     return crc & 0x7FF;
 }
 
-static uint32_t calculate_flexray_frame_crc(const uint8_t *raw_buffer, const flexray_frame_t *frame)
+uint32_t __no_inline_not_in_flash_func(calculate_flexray_frame_crc)(const uint8_t *restrict p, const uint16_t len16)
 {
     uint32_t crc = 0xFEDCBA;
-    const uint32_t poly = 0x5D6DCB;
 
-    const uint8_t *data_ptr = raw_buffer;
-    size_t len = 5 + (frame->payload_length_words * 2);
-
-    for (size_t i = 0; i < len; ++i)
-    {
-        uint8_t tbl_idx = ((crc >> 16) & 0xFF) ^ data_ptr[i];
-        crc = (crc << 8) ^ flexray_crc24_table[tbl_idx];
+    uint32_t n = (uint32_t)len16;
+    while (n >= 4) {
+        uint8_t i0 = (uint8_t)((crc >> 16) ^ *p++); crc = (crc << 8) ^ flexray_crc24_table[i0];
+        uint8_t i1 = (uint8_t)((crc >> 16) ^ *p++); crc = (crc << 8) ^ flexray_crc24_table[i1];
+        uint8_t i2 = (uint8_t)((crc >> 16) ^ *p++); crc = (crc << 8) ^ flexray_crc24_table[i2];
+        uint8_t i3 = (uint8_t)((crc >> 16) ^ *p++); crc = (crc << 8) ^ flexray_crc24_table[i3];
+        n -= 4;
+    }
+    while (n--) {
+        uint8_t idx = (uint8_t)((crc >> 16) ^ *p++);
+        crc = (crc << 8) ^ flexray_crc24_table[idx];
     }
     return crc & 0xFFFFFF;
 }
@@ -97,7 +91,7 @@ static bool check_frame_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
     {
         return frame->frame_crc == 0;
     }
-    uint32_t calculated_crc = calculate_flexray_frame_crc(raw_buffer, frame);
+    uint32_t calculated_crc = calculate_flexray_frame_crc(raw_buffer, frame->payload_length_words * 2 + 5);
     return calculated_crc == frame->frame_crc;
 }
 

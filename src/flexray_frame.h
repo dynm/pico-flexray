@@ -35,5 +35,5 @@ bool parse_frame(const uint8_t *raw_buffer, flexray_frame_t *parsed_frame);
 bool parse_frame_from_slice(const uint8_t *raw_buffer, uint16_t slice_len, uint8_t source, flexray_frame_t *parsed_frame);
 void print_frame(flexray_frame_t *frame);
 bool is_valid_frame(flexray_frame_t *frame, const uint8_t *raw_buffer);
-
+uint32_t calculate_flexray_frame_crc(const uint8_t *restrict p, const uint16_t len16);
 #endif // FLEXRAY_FRAME_H

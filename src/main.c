@@ -17,6 +17,15 @@
 #include <unistd.h>
 #include "hardware/regs/addressmap.h"
 
+#include "replay_frame.h"
+#include "flexray_frame.h"
+#include "panda_usb.h"
+#include "flexray_bss_streamer.h"
+#include "flexray_forwarder_with_injector.h"
+
+#define SRAM __attribute__((section(".data")))
+#define FLASH __attribute__((section(".rodata")))
+
 extern char __end__;
 extern char __StackTop;
 extern char __StackLimit;
@@ -47,15 +56,7 @@ static void print_ram_usage(void) {
 	       (unsigned long)stack_free);
 }
 
-#include "flexray_override_pipeline.pio.h"
-#include "replay_frame.h"
-#include "flexray_frame.h"
-#include "panda_usb.h"
-#include "flexray_bss_streamer.h"
-#include "flexray_injector.h"
 
-#define SRAM __attribute__((section(".data")))
-#define FLASH __attribute__((section(".rodata")))
 // --- Configuration ---
 
 // -- Streamer Pins --
@@ -74,18 +75,6 @@ static void print_ram_usage(void) {
 // Forward declaration for the Core 1 counter
 extern volatile uint32_t core1_sent_frame_count;
 
-
-void setup_forwarder_with_injector(PIO pio,
-    uint rx_pin_from_ecu, uint tx_pin_to_vehicle,
-    uint rx_pin_from_vehicle, uint tx_pin_to_ecu)
-{
-    uint offset = pio_add_program(pio, &flexray_forwarder_with_injector_program);
-    uint sm_from_ecu_to_vehicle = pio_claim_unused_sm(pio, true);
-    uint sm_from_vehicle_to_ecu = pio_claim_unused_sm(pio, true);
-
-    flexray_forwarder_with_injector_program_init(pio, sm_from_ecu_to_vehicle, offset, rx_pin_from_ecu, tx_pin_to_vehicle);
-    flexray_forwarder_with_injector_program_init(pio, sm_from_vehicle_to_ecu, offset, rx_pin_from_vehicle, tx_pin_to_ecu);
-}
 
 void print_pin_assignments()
 {
@@ -164,6 +153,11 @@ void setup_pins()
     // enable transceiver
     gpio_put(BGE_PIN, 1);
     gpio_put(STBN_PIN, 1);
+
+    // Debug profiling pin: GPIO7 low = idle, high = ISR processing
+    gpio_init(7);
+    gpio_set_dir(7, GPIO_OUT);
+    gpio_put(7, 0);
 }
 
 int main()

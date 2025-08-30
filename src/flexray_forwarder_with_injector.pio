@@ -36,7 +36,7 @@ injector_mode:
     jmp skip_bss_high
 
 inject_loop:
-    set pins, 1 [8]
+    set pins, 1 [9]
     set pins, 0 [1]
 skip_bss_high:
     set pins, 0 [6]
@@ -45,8 +45,9 @@ out_1_byte:
     out pins, 1 [8]
     jmp x-- out_1_byte  
 
-    out pins, 1 [7]
+    out pins, 1 [8]
     jmp y--, inject_loop
+    set pins, 0
     jmp accept_fes
 .wrap
 % c-sdk {

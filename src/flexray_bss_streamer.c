@@ -6,13 +6,14 @@
 #include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/clocks.h"
+#include "hardware/structs/sio.h"
 #include "pico/multicore.h"
 
 #include <string.h>
 
 #include "flexray_bss_streamer.pio.h"
 #include "flexray_bss_streamer.h"
-#include "flexray_injector.h"
+#include "flexray_forwarder_with_injector.h"
 #include "flexray_frame.h"
 
 // --- Global State ---
@@ -42,11 +43,8 @@ volatile void *buffer_addresses[2] = {
     (void *)vehicle_ring_buffer};
 
 // DMA to write injector payload to PIO2 SM3 TX FIFO
-volatile int dma_inject_chan = -1;
-static uint32_t injector_payload[7] = {
-    23,
-    0xFFFF11FF, 0xFFFFFFFF, 0xFFFFF0F0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
-};
+volatile int dma_inject_chan_to_ecu = -1;
+volatile int dma_inject_chan_to_vehicle = -1;
 static dma_channel_config injector_dc;
 
 // injection/cache logic moved into flexray_injector.{h,c}
@@ -115,8 +113,10 @@ uint32_t notify_queue_dropped(void)
 }
 
 // This is the DMA interrupt handler, which is much more efficient.
-void streamer_irq0_handler()
+void __time_critical_func(streamer_irq0_handler)(void)
 {
+    // GPIO7 high indicates ISR processing; use direct SIO for minimal overhead
+    sio_hw->gpio_set = (1u << 7);
     uint32_t start_idx = 0;
 
     irq_handler_call_count++;
@@ -183,25 +183,17 @@ void streamer_irq0_handler()
         uint8_t payload_len_words = (uint8_t)((h2 >> 1) & 0x7F);
         payload_length = (uint8_t)(payload_len_words * 2u); // bytes
         current_cycle_count = (uint8_t)(h4 & 0x3F);
-        dma_channel_abort(dma_inject_chan);
 
-        // Caching moved to main loop after validation
-        try_to_inject_frame(current_frame_id, current_cycle_count);
+        // is_vehicle is from vehicle, so to_vehicle = !is_vehicle
+        try_inject_frame(current_frame_id, current_cycle_count, !is_vehicle);
     }
 
     // Encode: [31]=source(1=VEH), [30:12]=seq(19 bits), [11:0]=ring index (4KB ring)
     uint32_t encoded = notify_encode(is_vehicle, ((irq_counter++) & 0x7FFFF), idx);
     (void)notify_queue_push(encoded);
+    // Set GPIO7 low to indicate ISR exit (idle)
+    sio_hw->gpio_clr = (1u << 7);
 }
-
-// injection/cache functions are declared in flexray_injector.h and implemented in flexray_injector.c
-
-void inject_frame(uint16_t frame_id, uint8_t cycle_count, uint16_t injector_payload_length)
-{
-    dma_channel_set_read_addr((uint)dma_inject_chan, (const void *)injector_payload, false);
-    dma_channel_set_trans_count((uint)dma_inject_chan, injector_payload_length, true);
-}
-
 
 void setup_stream(PIO pio,
                   uint rx_pin_from_ecu, uint tx_en_pin_to_vehicle,
@@ -265,34 +257,13 @@ void setup_stream(PIO pio,
                           DMA_BLOCK_COUNT_BYTES,
                           true);
 
-    // Configure rearm channels: write a 32-bit refill value to data channel's transfer_count_trig
-    // static uint32_t ecu_refill_count = DMA_BLOCK_COUNT_BYTES;
-    // static uint32_t veh_refill_count = DMA_BLOCK_COUNT_BYTES;
-
-
     pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
     irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
     irq_set_enabled(pio_get_irq_num(pio, 0), true);
 
-    // dma_channel_start(dma_data_from_ecu_chan);
-    // dma_channel_start(dma_data_from_vehicle_chan);
     pio_interrupt_clear(pio, 3);
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_from_ecu, true);
     pio_sm_set_enabled(pio, sm_from_vehicle, true);
 
-    if (dma_inject_chan < 0)
-    {
-        dma_inject_chan = (int)dma_claim_unused_channel(true);
-    }
-    if (!dma_channel_is_busy((uint)dma_inject_chan))
-    {
-        injector_dc = dma_channel_get_default_config((uint)dma_inject_chan);
-        channel_config_set_transfer_data_size(&injector_dc, DMA_SIZE_32);
-        channel_config_set_read_increment(&injector_dc, true);
-        channel_config_set_write_increment(&injector_dc, false);
-        channel_config_set_dreq(&injector_dc, pio_get_dreq(pio2, 1, true)); // TX pacing
-        dma_channel_set_config((uint)dma_inject_chan, &injector_dc, false);        
-        dma_channel_set_write_addr((uint)dma_inject_chan, (void *)&pio2->txf[1], false);
-    }
 }
