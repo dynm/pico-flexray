@@ -6,6 +6,7 @@
 #include "tusb.h"
 #include "flexray_frame.h"
 #include "flexray_fifo.h"
+#include "flexray_forwarder_with_injector.h"
 #include <string.h>
 
 // Add near top after includes
@@ -32,6 +33,46 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
 static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *request);
 static bool handle_control_data_stage(tusb_control_request_t const *request, uint8_t const *data, uint16_t len);
 static bool try_send_from_fifo(const char *context);
+// ------------------------------------------------------------
+// Vendor OUT protocol (host -> device)
+//  op 0x90: Push override replacement slice
+//    [0x90][u16 id][u8 base][u16 len][len bytes slice]
+//    - id must match a trigger_rule_t.target_id; base must match rule.cycle_base
+//    - len must equal rule.replace_len
+//  op 0x91: Set injector enable
+//    [0x91][u8 enabled]
+// ------------------------------------------------------------
+static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
+{
+    uint32_t off = 0;
+    while ((uint16_t)(len - off) >= 1) {
+        uint8_t op = data[off++];
+        if (op == 0x90) {
+            if ((uint16_t)(len - off) < 5) {
+                break;
+            }
+            uint16_t id = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
+            uint8_t base = data[off + 2];
+            uint16_t flen = (uint16_t)(data[off + 3] | ((uint16_t)data[off + 4] << 8));
+            off += 5;
+            if ((uint16_t)(len - off) < flen) {
+                break;
+            }
+            (void)injector_submit_override(id, base, flen, &data[off]);
+            off += flen;
+        } else if (op == 0x91) {
+            if ((uint16_t)(len - off) < 1) {
+                break;
+            }
+            bool en = data[off++] != 0;
+            injector_set_enabled(en);
+        } else {
+            // Unknown op: stop parsing this buffer
+            break;
+        }
+    }
+}
+
 
 // Placeholder for git version
 const char *GITLESS_REVISION = "dev";
@@ -350,10 +391,14 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 {
     if (bufsize > 0)
     {
-        printf("Received %u bytes from host via Bulk OUT\n", bufsize);
-        // TODO: Parse incoming CAN frames and forward to CAN bus
-        // This would involve unpacking can_header + data from the buffer
-        // and sending it to the physical CAN interface
+        handle_vendor_out_payload(buffer, bufsize);
+    }
+    // Drain any additional data queued by USB core
+    while (tud_vendor_available()) {
+        uint8_t tmp[256];
+        uint32_t n = tud_vendor_read(tmp, sizeof(tmp));
+        if (n == 0) break;
+        handle_vendor_out_payload(tmp, (uint16_t)n);
     }
     last_usb_activity = get_absolute_time();
 }

@@ -33,7 +33,7 @@ static bool get_bit_from_byte_array(const uint8_t *buffer, int bit_index)
     return (buffer[byte_index] >> bit_offset) & 1;
 }
 
-static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer, const flexray_frame_t *frame)
+static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer)
 {
     uint32_t data_word = 0;
     data_word = (uint32_t)(raw_buffer[0] & 0b11111) << 16;
@@ -79,9 +79,19 @@ uint32_t __no_inline_not_in_flash_func(calculate_flexray_frame_crc)(const uint8_
     return crc & 0xFFFFFF;
 }
 
+uint8_t __no_inline_not_in_flash_func(calculate_autosar_e2e_crc8)(const uint8_t *restrict p, const uint8_t init_value, const uint8_t len)
+{
+    // CRC-8 via LUT: poly 0x1D
+    uint8_t crc = init_value;
+    for (uint8_t i = 0; i < len; i++) {
+        crc = flexray_crc8_table[crc ^ p[i]];
+    }
+    return crc;
+}
+
 static bool check_header_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
 {
-    uint16_t calculated_crc = calculate_flexray_header_crc(raw_buffer, frame);
+    uint16_t calculated_crc = calculate_flexray_header_crc(raw_buffer);
     return calculated_crc == frame->header_crc;
 }
 

@@ -36,4 +36,15 @@ bool parse_frame_from_slice(const uint8_t *raw_buffer, uint16_t slice_len, uint8
 void print_frame(flexray_frame_t *frame);
 bool is_valid_frame(flexray_frame_t *frame, const uint8_t *raw_buffer);
 uint32_t calculate_flexray_frame_crc(const uint8_t *restrict p, const uint16_t len16);
+uint8_t calculate_autosar_e2e_crc8(const uint8_t *restrict p, const uint8_t init_value, const uint8_t len);
+
+// In-place update of the 24-bit payload CRC at the end of a frame slice.
+// total_len_bytes is the length of header+payload+CRC (i.e., includes 3 CRC bytes).
+static inline void fix_flexray_frame_crc(uint8_t *restrict frame_bytes, const uint16_t total_len_bytes)
+{
+    uint32_t new_crc = calculate_flexray_frame_crc(frame_bytes, (uint16_t)(total_len_bytes - 3));
+    frame_bytes[total_len_bytes - 3] = (uint8_t)(new_crc >> 16);
+    frame_bytes[total_len_bytes - 2] = (uint8_t)(new_crc >> 8);
+    frame_bytes[total_len_bytes - 1] = (uint8_t)(new_crc);
+}
 #endif // FLEXRAY_FRAME_H

@@ -177,7 +177,6 @@ void __time_critical_func(streamer_irq0_handler)(void)
         uint8_t h3 = ring_base[(start_idx + 3) & ring_mask];
         uint8_t h4 = ring_base[(start_idx + 4) & ring_mask];
         (void)h3; // silence unused warnings; kept for clarity/extension
-
         current_frame_id = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
         // byte2 bits [7:1] hold payload_length_words (7 bits)
         uint8_t payload_len_words = (uint8_t)((h2 >> 1) & 0x7F);
