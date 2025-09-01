@@ -23,8 +23,7 @@ typedef struct {
 } trigger_rule_t;
 
 static const trigger_rule_t INJECT_TRIGGERS[] = {
-	{ 0x47, 0x48, 0b11, 1, 0xd6, 4, 2, INJECT_DIRECTION_TO_ECU},
-	// { 97, 108, 0b00, 0, 0xd6, 2, 2, INJECT_DIRECTION_TO_VEHICLE},
+	{ 0x47, 0x48, 0b11, 1, 0xd6, 2, 2, INJECT_DIRECTION_TO_ECU},
 };
 
 #define NUM_TRIGGER_RULES (sizeof(INJECT_TRIGGERS)/sizeof(INJECT_TRIGGERS[0]))

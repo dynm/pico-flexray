@@ -58,7 +58,7 @@ def main() -> int:
     # Build one buffer containing enable + two overrides
     buf = bytearray()
 
-    amplitude = 0.2
+    amplitude = 30.0
     half_period_s = 3.0
     start_time = time.time()
 
@@ -72,14 +72,11 @@ def main() -> int:
                 angle = -amplitude + (2 * amplitude) * (t / half_period_s)
             else:
                 angle = amplitude - (2 * amplitude) * ((t - half_period_s) / half_period_s)
-            # angle_bytes = angle_to_bytes(angle)
-            torque_bytes = torque_to_bytes(angle)
+            angle_bytes = angle_to_bytes(angle)
             # print(f"Hex: {angle_bytes.hex()} Angle: {angle}")
             # buf = build_override_payload(0x48, 0, angle_to_bytes(angle))
-            # buf = build_override_payload(0x48, 1, angle_bytes)
-            buf = build_override_payload(0x48, 1, torque_bytes)
-            # print(f"Hex: {buf.hex()} Angle: {angle}")
-            print(f"Hex: {buf.hex()} Torque: {angle}")
+            buf = build_override_payload(0x48, 1, angle_bytes)
+            print(f"Hex: {buf.hex()} Angle: {angle}")
             written = dev.write(EP_VENDOR_OUT, buf, timeout=1000)
             # print(f"Written: {written}")
             # if written == len(buf):
