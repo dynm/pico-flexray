@@ -9,7 +9,7 @@
 void try_cache_last_target_frame(uint16_t frame_id, uint8_t cycle_count, uint16_t frame_length, uint8_t *captured_bytes);
 
 // On receiving a frame, check triggers; if matched, mutate template and request injection
-void try_inject_frame(uint16_t frame_id, uint8_t cycle_count, bool to_vehicle);
+void try_inject_frame(uint16_t frame_id, uint8_t cycle_count);
 
 void setup_forwarder_with_injector(PIO pio,
     uint rx_pin_from_ecu, uint tx_pin_to_vehicle,

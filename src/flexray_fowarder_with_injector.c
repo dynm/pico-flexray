@@ -126,25 +126,27 @@ static void fix_e2e_payload(uint8_t *full_frame, uint8_t init_value, uint8_t len
     full_frame[5] = calculate_autosar_e2e_crc8(full_frame+6, init_value, len);;
 }
 
-static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, bool to_vehicle)
+static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, uint8_t direction)
 {
     // first word is length indicator, rest is payload
     // pio y-- need pre-sub 1 from length
-    if (to_vehicle) {
+    if (direction == INJECT_DIRECTION_TO_VEHICLE) {
     pio_sm_put(pio_forwarder_with_injector, sm_forwarder_with_injector_to_vehicle, injector_payload_length - 1);
     dma_channel_set_read_addr((uint)dma_inject_chan_to_vehicle, (const void *)full_frame, false);
     dma_channel_set_trans_count((uint)dma_inject_chan_to_vehicle, injector_payload_length / 4, true);
-    } else {
+    } else if (direction == INJECT_DIRECTION_TO_ECU) {
     pio_sm_put(pio_forwarder_with_injector, sm_forwarder_with_injector_to_ecu, injector_payload_length - 1);
     dma_channel_set_read_addr((uint)dma_inject_chan_to_ecu, (const void *)full_frame, false);
     dma_channel_set_trans_count((uint)dma_inject_chan_to_ecu, injector_payload_length / 4, true);
+    } else {
+        return;
     }
 }
 
 // flexray_frame_t dummy_frame;
 // always fetch cache before store new value
 uint8_t replace_bytes[32];
-void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_count, bool to_vehicle)
+void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_count)
 {
     // Find any trigger where current frame is the "previous" id
     for (int i = 0; i < (int)NUM_TRIGGER_RULES; i++) {
@@ -160,7 +162,6 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
             continue;
         }
 
-        // Prefer a host override if present for target id and cycle
         frame_template_t *tpl = &TEMPLATES[target_slot];
         if (!tpl->valid || tpl->len < 8){
             continue;
@@ -176,13 +177,13 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
         fix_e2e_payload(tpl->data, INJECT_TRIGGERS[i].e2e_init_value, tpl->len - 8 - 1);
         fix_cycle_count(tpl->data, cycle_count);
         fix_flexray_frame_crc(tpl->data, tpl->len);
-        inject_frame(tpl->data, tpl->len, to_vehicle);
+        inject_frame(tpl->data, tpl->len, INJECT_TRIGGERS[i].direction);
         break; // fire once per triggering frame
         
     }
 }
 
-static void setup_dma(){
+static void setup_dma(void){
     dma_inject_chan_to_vehicle = (int)dma_claim_unused_channel(true);
     dma_inject_chan_to_ecu = (int)dma_claim_unused_channel(true);
     

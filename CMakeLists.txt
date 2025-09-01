@@ -23,7 +23,7 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico2 CACHE STRING "Board type")
+set(PICO_BOARD waveshare_rp2350_zero CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -83,6 +83,11 @@ target_link_libraries(pico_flexray
 target_include_directories(pico_flexray PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/src
+)
+
+# Enable strict compiler warnings for C sources and treat warnings as errors
+target_compile_options(pico_flexray PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wstrict-prototypes -Werror>
 )
 
 # Add any user requested libraries

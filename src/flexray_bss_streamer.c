@@ -45,7 +45,6 @@ volatile void *buffer_addresses[2] = {
 // DMA to write injector payload to PIO2 SM3 TX FIFO
 volatile int dma_inject_chan_to_ecu = -1;
 volatile int dma_inject_chan_to_vehicle = -1;
-static dma_channel_config injector_dc;
 
 // injection/cache logic moved into flexray_injector.{h,c}
 
@@ -71,7 +70,6 @@ static volatile uint32_t notify_dropped = 0;
 
 static volatile uint16_t current_frame_id = 0;
 static volatile uint8_t current_cycle_count = 0;
-static volatile uint8_t payload_length = 0;
 
 void notify_queue_init(void)
 {
@@ -173,18 +171,14 @@ void __time_critical_func(streamer_irq0_handler)(void)
 
         uint8_t h0 = ring_base[(start_idx + 0) & ring_mask];
         uint8_t h1 = ring_base[(start_idx + 1) & ring_mask];
-        uint8_t h2 = ring_base[(start_idx + 2) & ring_mask];
-        uint8_t h3 = ring_base[(start_idx + 3) & ring_mask];
+        // uint8_t h2 = ring_base[(start_idx + 2) & ring_mask];
+        // uint8_t h3 = ring_base[(start_idx + 3) & ring_mask];
         uint8_t h4 = ring_base[(start_idx + 4) & ring_mask];
-        (void)h3; // silence unused warnings; kept for clarity/extension
+        // (void)h3; // silence unused warnings; kept for clarity/extension
         current_frame_id = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
-        // byte2 bits [7:1] hold payload_length_words (7 bits)
-        uint8_t payload_len_words = (uint8_t)((h2 >> 1) & 0x7F);
-        payload_length = (uint8_t)(payload_len_words * 2u); // bytes
         current_cycle_count = (uint8_t)(h4 & 0x3F);
 
-        // is_vehicle is from vehicle, so to_vehicle = !is_vehicle
-        try_inject_frame(current_frame_id, current_cycle_count, !is_vehicle);
+        try_inject_frame(current_frame_id, current_cycle_count);
     }
 
     // Encode: [31]=source(1=VEH), [30:12]=seq(19 bits), [11:0]=ring index (4KB ring)

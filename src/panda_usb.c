@@ -11,7 +11,6 @@
 
 // Add near top after includes
 static absolute_time_t last_usb_activity = 0;
-static const int USB_ACTIVITY_TIMEOUT_US = 1000000; // 1 second
 
 // FlexRay FIFO
 static flexray_fifo_t flexray_fifo;
@@ -180,7 +179,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
             uint32_t timer_val = time_us_32();
             memcpy(response_data, &timer_val, sizeof(timer_val));
             response_len = sizeof(timer_val);
-            printf("Control Read: GET_MICROSECOND_TIMER -> %u\n", timer_val);
+            printf("Control Read: GET_MICROSECOND_TIMER -> %lu\n", timer_val);
         }
         break;
 
@@ -389,6 +388,7 @@ void tud_resume_cb(void)
 // Invoked when received data from host via OUT endpoint
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 {
+    (void)itf;
     if (bufsize > 0)
     {
         handle_vendor_out_payload(buffer, bufsize);

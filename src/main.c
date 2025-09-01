@@ -76,7 +76,7 @@ static void print_ram_usage(void) {
 extern volatile uint32_t core1_sent_frame_count;
 
 
-void print_pin_assignments()
+void print_pin_assignments(void)
 {
     printf("Test Data Output Pin: %02d\n", REPLAY_TX_PIN);
     printf("BGE Pin: %02d\n", BGE_PIN);
@@ -114,7 +114,7 @@ static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t p
     printf("Notify dropped=%lu\n", notify_queue_dropped());
 }
 
-void core1_entry()
+void core1_entry(void)
 {
     setup_stream(pio0,
                  RXD_FROM_ECU_PIN, TXEN_TO_VEHICLE_PIN,
@@ -126,7 +126,7 @@ void core1_entry()
     }
 }
 
-void setup_pins()
+void setup_pins(void)
 {
     // disable transceiver
     gpio_init(BGE_PIN);
@@ -160,7 +160,7 @@ void setup_pins()
     gpio_put(7, 0);
 }
 
-int main()
+int main(void)
 {
     setup_pins();
 

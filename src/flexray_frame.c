@@ -26,13 +26,6 @@ static inline uint32_t get_bits_msb(const uint32_t *buffer, int start_bit_idx, i
     }
 }
 
-static bool get_bit_from_byte_array(const uint8_t *buffer, int bit_index)
-{
-    int byte_index = bit_index / 8;
-    int bit_offset = 7 - (bit_index % 8);
-    return (buffer[byte_index] >> bit_offset) & 1;
-}
-
 static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer)
 {
     uint32_t data_word = 0;
@@ -42,7 +35,6 @@ static uint16_t calculate_flexray_header_crc(const uint8_t *raw_buffer)
     data_word >>= 1;
 
     uint16_t crc = 0x1A;
-    const uint16_t poly = 0x385;
 
     uint8_t byte0 = (data_word >> 12) & 0xFF; // bit19-12
     uint8_t index = ((crc >> 3) & 0xFF) ^ byte0;
@@ -201,7 +193,7 @@ void print_frame(flexray_frame_t *frame)
     {
         printf("%02X", frame->payload[i]);
     }
-    printf(",%02X,%s\n", frame->frame_crc, frame->source == FROM_ECU ? "ECU" : frame->source == FROM_VEHICLE ? "VEHICLE"
+    printf(",%02lX,%s\n", frame->frame_crc, frame->source == FROM_ECU ? "ECU" : frame->source == FROM_VEHICLE ? "VEHICLE"
                                                                                                                : "UNKNOWN");
 }
 
