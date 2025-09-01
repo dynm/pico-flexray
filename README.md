@@ -8,7 +8,7 @@ A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards 
   - Continuous, bidirectional FlexRay frame forwarding (vehicle ↔ ECU)
   - Optional replay/test output via a dedicated GPIO
   - USB interface is Panda-compatible
-  - FlexRay MITM WIP
+  - FlexRay MITM Done
 
 ### Hardware connections
 1. For read-only FlexRay frame capture, connect a single transceiver to the vehicle’s bus, attach its BP/BM lines to the FlexRay lines in your vehicle.
@@ -28,6 +28,7 @@ Refer to your board’s pinout for physical pad/header locations. Signals below 
 | 27 | `TXEN_TO_VEHICLE` | Output | Vehicle | TX_EN for vehicle-side transceiver
 | 26 | `RXD_FROM_VEHICLE` | Input | Vehicle | RXD from vehicle-side transceiver
 | 15 | `REPLAY_TX` | Output | Test | PIO replay/test sample FlexRay frame output
+| 7 | `ISR` | Output | Measurement | Use a logic analyzer to measure the frame preparation time consumption.
 
 ![Wiring diagram](imgs/wiring.png)
 **Note:**  
