@@ -3,12 +3,6 @@
 
 #include <stdint.h>
 
-// ---- Cache/Trigger configuration ----
-// typedef struct {
-// 	uint16_t id;
-// 	uint8_t  cycle_mask;
-// 	uint8_t  cycle_base;
-// } cache_rule_t;
 #define INJECT_DIRECTION_TO_VEHICLE 1
 #define INJECT_DIRECTION_TO_ECU 0
 typedef struct {
@@ -23,7 +17,8 @@ typedef struct {
 } trigger_rule_t;
 
 static const trigger_rule_t INJECT_TRIGGERS[] = {
-	{ 0x47, 0x48, 0b11, 1, 0xd6, 2, 2, INJECT_DIRECTION_TO_ECU},
+	// I connect the ECU side to the Domain Controller, so reverse the direction
+	{ 0x47, 0x48, 0b11, 1, 0xd6, 2, 14, INJECT_DIRECTION_TO_ECU}, 
 };
 
 #define NUM_TRIGGER_RULES (sizeof(INJECT_TRIGGERS)/sizeof(INJECT_TRIGGERS[0]))
