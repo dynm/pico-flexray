@@ -65,6 +65,8 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             bool en = data[off++] != 0;
             injector_set_enabled(en);
+        } else if (op == 0x00) {
+            continue;
         } else {
             // Unknown op: stop parsing this buffer
             break;
@@ -170,7 +172,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         // Return hardware type (Red Panda = 4 for CAN-FD support)
         response_data[0] = panda_state.hw_type;
         response_len = 1;
-        printf("Control Read: GET_HW_TYPE -> %d\n", response_data[0]);
+        // printf("Control Read: GET_HW_TYPE -> %d\n", response_data[0]);
         break;
 
     case PANDA_GET_MICROSECOND_TIMER:
@@ -179,7 +181,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
             uint32_t timer_val = time_us_32();
             memcpy(response_data, &timer_val, sizeof(timer_val));
             response_len = sizeof(timer_val);
-            printf("Control Read: GET_MICROSECOND_TIMER -> %lu\n", timer_val);
+            // printf("Control Read: GET_MICROSECOND_TIMER -> %lu\n", timer_val);
         }
         break;
 
@@ -189,26 +191,109 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
             uint16_t fan_rpm = 0; // Placeholder
             memcpy(response_data, &fan_rpm, sizeof(fan_rpm));
             response_len = sizeof(fan_rpm);
-            printf("Control Read: GET_FAN_RPM -> %d\n", fan_rpm);
+            // printf("Control Read: GET_FAN_RPM -> %d\n", fan_rpm);
         }
         break;
 
-    case PANDA_GET_MCU_UID:
-    {
-        pico_unique_board_id_t uid;
-        pico_get_unique_board_id(&uid);
-        // On Pico, UID is 8 bytes. Panda expects 12. Pad with 0s.
-        memset(response_data, 0, 12);
-        memcpy(response_data, uid.id, PICO_UNIQUE_BOARD_ID_SIZE_BYTES);
-        response_len = 12;
-        printf("Control Read: GET_MCU_UID\n");
-    }
-    break;
+    case PANDA_GET_CAN_HEALTH_STATS:
+        struct can_health_t * can_health = (struct can_health_t*)response_data;
+        can_health->can_speed = 0;
+        can_health->can_data_speed = 0;
+        can_health->canfd_enabled = 0;
+        can_health->brs_enabled = 0;
+        can_health->canfd_non_iso = 0;
+        response_len = sizeof(struct can_health_t);
+        memcpy(response_data, can_health, response_len);
+        // printf("Control Read: GET_CAN_HEALTH_STATS\n");
+        break;
+
+    // case PANDA_GET_MCU_UID:
+    // {
+    //     pico_unique_board_id_t uid;
+    //     pico_get_unique_board_id(&uid);
+    //     // On Pico, UID is 8 bytes. Panda expects 12. Pad with 0s.
+    //     memset(response_data, 0, 12);
+    //     memcpy(response_data, uid.id, PICO_UNIQUE_BOARD_ID_SIZE_BYTES);
+    //     response_len = 12;
+    //     // printf("Control Read: GET_MCU_UID\n");
+    // }
+    // break;
+
+    case PANDA_GET_HEALTH_PACKET:
+        struct health_t * health = (struct health_t*)response_data;
+        health->heartbeat_lost_pkt = 0;
+        health->power_save_enabled_pkt = 0;
+        health->alternative_experience_pkt = 0;
+        health->interrupt_load_pkt = 0;
+        health->fan_power = 0;
+        health->safety_rx_checks_invalid_pkt = 0;
+        health->spi_error_count_pkt = 0;
+        health->fan_stall_count = 0;
+        health->sbu1_voltage_mV = 0;
+        health->sbu2_voltage_mV = 0;
+        health->som_reset_triggered = 0;
+        health->uptime_pkt = 0;
+        health->voltage_pkt = 0;
+        health->current_pkt = 0;
+        health->safety_tx_blocked_pkt = 0;
+        health->safety_rx_invalid_pkt = 0;
+        health->tx_buffer_overflow_pkt = 0;
+        health->rx_buffer_overflow_pkt = 0;
+        health->faults_pkt = 0;
+        health->ignition_line_pkt = 1;
+        health->ignition_can_pkt = 1;
+        health->controls_allowed_pkt = 1;
+        health->car_harness_status_pkt = 1;
+        health->safety_mode_pkt = 1;
+        health->safety_param_pkt = 0;
+        health->fault_status_pkt = 0;
+        health->power_save_enabled_pkt = 0;
+        health->heartbeat_lost_pkt = 0;
+        health->alternative_experience_pkt = 0;
+        health->interrupt_load_pkt = 0;
+        health->fan_power = 0;
+        health->safety_rx_checks_invalid_pkt = 0;
+        health->spi_error_count_pkt = 0;
+        health->fan_stall_count = 0;
+        health->sbu1_voltage_mV = 0;
+        health->sbu2_voltage_mV = 0;
+        health->som_reset_triggered = 0;
+        response_len = sizeof(struct health_t);
+        memcpy(response_data, health, response_len);
+        // printf("Control Read: GET_HEALTH_PACKET\n");
+        break;
+
+    case PANDA_GET_SIGNATURE_PART1:
+        response_len = 64;
+        memset(response_data, 0, response_len);
+        // printf("Control Read: PANDA_GET_SIGNATURE_PART1\n");
+        break;
+
+    case PANDA_GET_SIGNATURE_PART2:
+        response_len = 64;
+        memset(response_data, 0, response_len);
+        // printf("Control Read: PANDA_GET_SIGNATURE_PART2\n");
+        break;
 
     case PANDA_GET_GIT_VERSION:
         response_len = strlen(GITLESS_REVISION);
         memcpy(response_data, GITLESS_REVISION, response_len);
-        printf("Control Read: PANDA_GET_GIT_VERSION\n");
+        // printf("Control Read: PANDA_GET_GIT_VERSION\n");
+        break;
+
+
+    case PANDA_GET_VERSIONS:
+        response_data[0] = 16;
+        response_data[1] = 4;
+        response_data[2] = 5;
+        response_len = 3;
+        // printf("Control Read: PANDA_GET_VERSIONS\n");
+        break;
+
+    case PANDA_UART_READ:
+        response_len = 0;
+        memset(response_data, 'c', response_len);
+        // printf("Control Read: PANDA_UART_READ\n");
         break;
 
     default:
@@ -216,12 +301,12 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         return false;
     }
 
-    if (response_len > 0)
-    {
+    // if (response_len >= 0)
+    // {
         return tud_control_xfer(rhport, request, response_data, response_len);
-    }
+    // }
 
-    return false;
+    // return false;
 }
 
 static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *request)
@@ -232,40 +317,45 @@ static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *r
     switch (request->bRequest)
     {
     case PANDA_RESET_CAN_COMMS:
-        printf("Control Write: RESET_CAN_COMMS (request=0x%02x)\n", request->bRequest);
+        // printf("Control Write: RESET_CAN_COMMS (request=0x%02x)\n", request->bRequest);
         flexray_fifo_init(&flexray_fifo);
+        handled = true;
+        break;
+
+    case PANDA_SET_CAN_FD_AUTO_SWITCH:
+        // printf("Control Write: SET_CAN_FD_AUTO_SWITCH -> %d\n", request->wValue);
         handled = true;
         break;
 
     case PANDA_SET_SAFETY_MODEL:
         panda_state.safety_model = request->wValue;
-        printf("Control Write: SET_SAFETY_MODEL -> %d, param %d\n", request->wValue, request->wIndex);
+        // printf("Control Write: SET_SAFETY_MODEL -> %d, param %d\n", request->wValue, request->wIndex);
         handled = true;
         break;
 
     case PANDA_SET_CAN_SPEED_KBPS:
     case PANDA_SET_CAN_FD_DATA_BITRATE:
-        printf("Control Write: SET_CAN_SPEED_KBPS -> %d\n", request->wValue);
+        // printf("Control Write: SET_CAN_SPEED_KBPS -> %d\n", request->wValue);
         handled = true;
         break;
 
     case PANDA_HEARTBEAT:
-        printf("Control Write: HEARTBEAT\n");
+        // printf("Control Write: HEARTBEAT\n");
         handled = true;
         break;
 
     case PANDA_SET_IR_POWER:
-        printf("Control Write: SET_IR_POWER -> %d\n", request->wValue);
+        // printf("Control Write: SET_IR_POWER -> %d\n", request->wValue);
         handled = true;
         break;
 
     case PANDA_SET_FAN_POWER:
-        printf("Control Write: SET_FAN_POWER -> %d\n", request->wValue);
+        // printf("Control Write: SET_FAN_POWER -> %d\n", request->wValue);
         handled = true;
         break;
 
     case PANDA_ENTER_BOOTLOADER_MODE:
-        printf("Control Write: ENTER_BOOTLOADER_MODE, mode=%d\n", request->wValue);
+        // printf("Control Write: ENTER_BOOTLOADER_MODE, mode=%d\n", request->wValue);
         if (request->wValue == 0)
         { // Bootloader
             pending_bootloader = true;
@@ -274,8 +364,18 @@ static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *r
         break;
 
     case PANDA_SYSTEM_RESET:
-        printf("Control Write: SYSTEM_RESET\n");
+        // printf("Control Write: SYSTEM_RESET\n");
         pending_reset = true;
+        handled = true;
+        break;
+
+    case PANDA_SET_POWER_SAVE_STATE:
+        // printf("Control Write: SET_POWER_SAVE_STATE -> %d\n", request->wValue);
+        handled = true;
+        break;
+
+    case PANDA_DISABLE_HEARTBEAT_CHECKS:
+        // printf("Control Write: DISABLE_HEARTBEAT_CHECKS\n");
         handled = true;
         break;
 
@@ -297,6 +397,10 @@ static bool handle_control_data_stage(tusb_control_request_t const *request, uin
     // Process the received data for different commands
     switch (request->bRequest)
     {
+    case PANDA_SET_CAN_FD_AUTO_SWITCH:
+        printf("Control Data: SET_CAN_FD_AUTO_SWITCH -> %d\n", request->wValue);
+        return true;
+
     case PANDA_SET_CAN_SPEED_KBPS:
         if (len >= 4) // Expect at least bus_id (2 bytes) + speed (2 bytes)
         {

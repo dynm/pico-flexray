@@ -123,7 +123,7 @@ static void fix_e2e_payload(uint8_t *full_frame, uint8_t init_value, uint8_t len
         nibble = 0;
     }
     full_frame[6] = (full_frame[6] & 0xF0) | (nibble & 0x0F);
-    full_frame[5] = calculate_autosar_e2e_crc8(full_frame+6, init_value, len);;
+    full_frame[5] = calculate_autosar_e2e_crc8(full_frame+6, init_value, len);
 }
 
 static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, uint8_t direction)
@@ -216,6 +216,23 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
         return false;
     }
 
+    if (len < 3 || len > MAX_FRAME_PAYLOAD_BYTES+3) {
+        return false;
+    }
+
+    len -= 3;
+
+    // check if bytes[0] == base
+    if (bytes[0] != base) {
+        return false;
+    }
+
+    // check if bytes[1]|bytes[2]<<8 == id
+    uint16_t id16 = (bytes[1]) | ((bytes[2]&0b111) << 8);
+    if (id16 != id) {
+        return false;
+    }
+
     const trigger_rule_t *matched_rule = NULL;
     for (int i = 0; i < (int)NUM_TRIGGER_RULES; i++) {
         if (INJECT_TRIGGERS[i].target_id == id && INJECT_TRIGGERS[i].cycle_base == base) {
@@ -229,7 +246,7 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
     if (len != matched_rule->replace_len) {
         return false;
     }
-    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes);
+    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes+3);
 }
 
 void injector_set_enabled(bool enabled)

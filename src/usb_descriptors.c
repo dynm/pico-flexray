@@ -6,6 +6,8 @@
 #define PANDA_VID 0x3801
 #define PANDA_PID 0xddcc
 
+#define PICO_FLEXRAY_DONGLE_ID_PREFIX "picoflex"
+
 #define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
 
 enum {
@@ -69,7 +71,7 @@ char const* string_desc_arr[] = {
 };
 
 static uint16_t _desc_str[32];
-static char serial_str[17]; // 8 bytes * 2 hex chars + null terminator
+static char serial_str[25]; // 12 bytes * 2 hex chars + null terminator
 
 //--------------------------------------------------------------------+
 // TinyUSB Callbacks
@@ -93,14 +95,20 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         chr_count = 1;
     } else if (index == 3) {
         // Generate serial number from board unique ID
-        if (serial_str[0] == '\0') {
-            pico_unique_board_id_t board_id;
-            pico_get_unique_board_id(&board_id);
-            
-            snprintf(serial_str, sizeof(serial_str), "%02x%02x%02x%02x%02x%02x%02x%02x",
-                     board_id.id[0], board_id.id[1], board_id.id[2], board_id.id[3],
-                     board_id.id[4], board_id.id[5], board_id.id[6], board_id.id[7]);
+        pico_unique_board_id_t board_id;
+        pico_get_unique_board_id(&board_id);
+        
+        // Build ASCII serial using a hex lookup table (faster and smaller than snprintf)
+        static const char hex_digits[] = "0123456789abcdef";
+        memcpy(serial_str, PICO_FLEXRAY_DONGLE_ID_PREFIX, strlen(PICO_FLEXRAY_DONGLE_ID_PREFIX));
+        uint8_t pos = 8;
+        for (int i = 0; i < 8; i++) {
+            uint8_t b = board_id.id[i];
+            serial_str[pos++] = hex_digits[b >> 4];
+            serial_str[pos++] = hex_digits[b & 0x0F];
         }
+        serial_str[pos] = '\0';
+
         string_desc_arr[3] = serial_str;
 
         chr_count = strlen(string_desc_arr[index]);
