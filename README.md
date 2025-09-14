@@ -102,7 +102,7 @@ To visualize FlexRay data using Cabana:
 
 3. Build Cabana:
    ```bash
-   source .venv/bi
+   source .venv/bin/activate
    scons -j$(nproc) tools/cabana/cabana
    ```
 
