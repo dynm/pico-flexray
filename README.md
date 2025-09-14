@@ -110,3 +110,8 @@ To visualize FlexRay data using Cabana:
    ```bash
    ./tools/cabana/cabana
    ```
+
+5. Testing:
+   If you want to develop without transceivers and are using only a single Pico board,
+   connect REPLAY_TX to RXD_FROM_ECU or RXD_FROM_VEHICLE with a jumper wire.
+   You will then see frames in Cabana.
