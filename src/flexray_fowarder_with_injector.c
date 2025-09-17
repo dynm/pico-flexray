@@ -174,7 +174,7 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
 
         memcpy(tpl->data+5+INJECT_TRIGGERS[i].replace_offset, replace_bytes+INJECT_TRIGGERS[i].replace_offset, INJECT_TRIGGERS[i].replace_len);
     
-        fix_e2e_payload(tpl->data, INJECT_TRIGGERS[i].e2e_init_value, tpl->len - 8 - 1);
+        fix_e2e_payload(tpl->data, INJECT_TRIGGERS[i].e2e_init_value, tpl->len - 8 - 8 - 1);
         fix_cycle_count(tpl->data, cycle_count);
         fix_flexray_frame_crc(tpl->data, tpl->len);
         inject_frame(tpl->data, tpl->len, INJECT_TRIGGERS[i].direction);
