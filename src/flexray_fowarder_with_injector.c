@@ -118,12 +118,12 @@ static void fix_cycle_count(uint8_t *full_frame, uint8_t cycle_count)
 static void fix_e2e_payload(uint8_t *full_frame, uint8_t init_value, uint8_t len)
 {
     // advance e2e alive counter lower nibble
-    uint8_t nibble = (full_frame[6] & 0x0F) + 1;
+    uint8_t nibble = (full_frame[6+8] & 0x0F) + 1;
     if (nibble == 0x0F) {
         nibble = 0;
     }
-    full_frame[6] = (full_frame[6] & 0xF0) | (nibble & 0x0F);
-    full_frame[5] = calculate_autosar_e2e_crc8(full_frame+6, init_value, len);
+    full_frame[6+8] = (full_frame[6+8] & 0xF0) | (nibble & 0x0F);
+    full_frame[5+8] = calculate_autosar_e2e_crc8(full_frame+6+8, init_value, len);
 }
 
 static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, uint8_t direction)
@@ -172,7 +172,7 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
             continue;
         }
 
-        memcpy(tpl->data+5+INJECT_TRIGGERS[i].replace_offset, replace_bytes, INJECT_TRIGGERS[i].replace_len);
+        memcpy(tpl->data+5+INJECT_TRIGGERS[i].replace_offset, replace_bytes+INJECT_TRIGGERS[i].replace_offset, INJECT_TRIGGERS[i].replace_len);
     
         fix_e2e_payload(tpl->data, INJECT_TRIGGERS[i].e2e_init_value, tpl->len - 8 - 1);
         fix_cycle_count(tpl->data, cycle_count);
@@ -243,9 +243,9 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
     if (matched_rule == NULL) {
         return false;
     }
-    if (len != matched_rule->replace_len) {
-        return false;
-    }
+    // if (len != matched_rule->replace_len) {
+    //     return false;
+    // }
     return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes+3);
 }
 
