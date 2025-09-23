@@ -115,15 +115,15 @@ static void fix_cycle_count(uint8_t *full_frame, uint8_t cycle_count)
     full_frame[4] = (full_frame[4] & 0b11000000) | (cycle_count & 0x3F);
 }
 
-static void fix_e2e_payload(uint8_t *full_frame, uint8_t init_value, uint8_t len)
+static void fix_e2e_payload(uint8_t *e2e_start_offset, uint8_t init_value, uint8_t len)
 {
     // advance e2e alive counter lower nibble
-    uint8_t nibble = (full_frame[6] & 0x0F) + 1;
+    uint8_t nibble = (e2e_start_offset[1] & 0x0F) + 1;
     if (nibble == 0x0F) {
         nibble = 0;
     }
-    full_frame[6] = (full_frame[6] & 0xF0) | (nibble & 0x0F);
-    full_frame[5] = calculate_autosar_e2e_crc8(full_frame+6, init_value, len);
+    e2e_start_offset[1] = (e2e_start_offset[1] & 0xF0) | (nibble & 0x0F);
+    e2e_start_offset[0] = calculate_autosar_e2e_crc8(e2e_start_offset+1, init_value, len);
 }
 
 static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, uint8_t direction)
@@ -145,12 +145,12 @@ static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, 
 
 // flexray_frame_t dummy_frame;
 // always fetch cache before store new value
-uint8_t replace_bytes[32];
+uint8_t replace_bytes[254];
 void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_count)
 {
     // Find any trigger where current frame is the "previous" id
     for (int i = 0; i < (int)NUM_TRIGGER_RULES; i++) {
-        if (INJECT_TRIGGERS[i].prev_id != frame_id){
+        if (INJECT_TRIGGERS[i].trigger_id != frame_id){
             continue;
         }
         if ((uint8_t)(cycle_count & INJECT_TRIGGERS[i].cycle_mask) != INJECT_TRIGGERS[i].cycle_base){
@@ -163,6 +163,7 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
         }
 
         frame_template_t *tpl = &TEMPLATES[target_slot];
+        uint8_t *tpl_payload = tpl->data+5;
         if (!tpl->valid || tpl->len < 8){
             continue;
         }
@@ -172,9 +173,9 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
             continue;
         }
 
-        memcpy(tpl->data+5+INJECT_TRIGGERS[i].replace_offset, replace_bytes, INJECT_TRIGGERS[i].replace_len);
+        memcpy(tpl_payload+INJECT_TRIGGERS[i].replace_offset, replace_bytes+INJECT_TRIGGERS[i].replace_offset, INJECT_TRIGGERS[i].replace_len);
     
-        fix_e2e_payload(tpl->data, INJECT_TRIGGERS[i].e2e_init_value, tpl->len - 8 - 1);
+        fix_e2e_payload(tpl_payload+INJECT_TRIGGERS[i].e2e_offset, INJECT_TRIGGERS[i].e2e_init_value, INJECT_TRIGGERS[i].e2e_len);
         fix_cycle_count(tpl->data, cycle_count);
         fix_flexray_frame_crc(tpl->data, tpl->len);
         inject_frame(tpl->data, tpl->len, INJECT_TRIGGERS[i].direction);
@@ -246,7 +247,8 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
     if (len != matched_rule->replace_len) {
         return false;
     }
-    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes+3);
+    // bytes+1: skip the first byte, which is the cycle count
+    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes+1);
 }
 
 void injector_set_enabled(bool enabled)
