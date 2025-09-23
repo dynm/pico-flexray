@@ -47,11 +47,12 @@ cd pico-flexray
 
 Option 1: Visual Studio Code
 1. Install the [Raspberry Pi Pico extension](https://marketplace.visualstudio.com/items?itemName=raspberry-pi.raspberry-pi-pico)
-2. Open this repo, click the Pico extension tab on the left panel
-3. Click "Switch Board" and select your Pico board
-4. Hold BOOT, plug USB, then you can release BOOT
-5. Click "Run Project (USB)"
-6. Done!
+2. Open this repo, do not enable RISC-V instructions
+3. Click the Pico extension tab on the left panel
+4. Click "Switch Board" and select your Pico board
+5. Hold BOOT, plug USB, then you can release BOOT
+6. Click "Run Project (USB)"
+7. Done!
 
 Option 2: Command line
 Prerequisites:
