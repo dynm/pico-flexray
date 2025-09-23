@@ -173,7 +173,7 @@ void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_cou
             continue;
         }
 
-        memcpy(tpl_payload+INJECT_TRIGGERS[i].replace_offset, replace_bytes+INJECT_TRIGGERS[i].replace_offset, INJECT_TRIGGERS[i].replace_len);
+        memcpy(tpl_payload+INJECT_TRIGGERS[i].replace_offset, replace_bytes, INJECT_TRIGGERS[i].replace_len);
     
         fix_e2e_payload(tpl_payload+INJECT_TRIGGERS[i].e2e_offset, INJECT_TRIGGERS[i].e2e_init_value, INJECT_TRIGGERS[i].e2e_len);
         fix_cycle_count(tpl->data, cycle_count);
@@ -217,11 +217,9 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
         return false;
     }
 
-    if (len < 3 || len > MAX_FRAME_PAYLOAD_BYTES+3) {
+    if (len < 1 || len > MAX_FRAME_PAYLOAD_BYTES+1) {
         return false;
     }
-
-    len -= 3;
 
     // check if bytes[0] == base
     if (bytes[0] != base) {
@@ -244,11 +242,13 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
     if (matched_rule == NULL) {
         return false;
     }
+    len = len - 1 - matched_rule->replace_offset;
+
     if (len != matched_rule->replace_len) {
         return false;
     }
     // bytes+1: skip the first byte, which is the cycle count
-    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, len, bytes+1);
+    return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, matched_rule->replace_len, bytes + 1 + matched_rule->replace_offset);
 }
 
 void injector_set_enabled(bool enabled)
