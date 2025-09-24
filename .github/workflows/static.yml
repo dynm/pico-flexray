@@ -1,0 +1,33 @@
+name: Deploy crc8.html to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main  # or your default branch
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare site
+        run: |
+          mkdir -p public
+          cp web/crc8.html public/
+          # Copy other assets if needed
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
