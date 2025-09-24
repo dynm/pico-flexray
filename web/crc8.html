@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AutoSAR E2E CRC-8 Parameter Search</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 16px; line-height: 1.5; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    label { font-size: 12px; color: #333; }
+    input[type="text"], textarea, select { padding: 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; min-width: 220px; }
+    textarea { width: 100%; height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    button { padding: 8px 12px; font-size: 13px; border: 1px solid #0d6efd; background: #0d6efd; color: #fff; border-radius: 6px; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip { padding: 4px 8px; border: 1px solid #ddd; border-radius: 999px; font-size: 12px; cursor: pointer; background: #f8f9fa; }
+    .chip.active { background: #e7f1ff; border-color: #0d6efd; color: #0d6efd; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; text-align: left; }
+    th { background: #f8fafc; }
+    code { background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
+    .muted { color: #666; font-size: 12px; }
+    .mt8 { margin-top: 8px; }
+    .mt12 { margin-top: 12px; }
+    .mt16 { margin-top: 16px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>AutoSAR E2E CRC-8 Parameter Search</h1>
+  <div class="muted mt8">Enter sample lines: each line is a hex string, <b>first byte is cycle count</b> and the remaining bytes are data. Example: <code>CAC5D0E715821E00</code></div>
+<div class="muted mt8">
+  For example, if your target frame id is <code>0x48</code>, base cycle is 1, from bus 1, you can get samples from Cabana:<br>
+  <code>export csv in cabana</code><br>
+  <code>grep '0x48,1,0x01' picoflexxxxxxxx.csv | head -10 | cut -d ',' -f 4</code><br>
+  <code>if you want to use the results in pico-flexyray, you should set e2e_offset to index - 1, because the first byte in csv payload is cycle count.</code>
+</div>
+  <div class="mt12 grid-2">
+    <div class="field" style="grid-column: 1 / -1;">
+      <label>Samples</label>
+      <textarea id="inputData" placeholder=""></textarea>
+      <div class="small muted">Tip: You can paste <code>0x...</code> or spaced hex; non-hex chars are ignored.</div>
+    </div>
+
+    <div class="field">
+      <label>Polynomials (comma-separated, hex)</label>
+      <input id="polys" type="text" value="1D,07,31,2F,9B,07 (Dallas),07 (CRC-8),A6,07 (CRC-8-SMBUS)">
+      <div class="small muted">Common: 1D (SAE J1850), 07 (Dallas/Maxim/CRC-8), 31 (CDMA2000), 2F (ITU), A6 (WCDMA)</div>
+    </div>
+
+    <div class="field">
+      <label>Init range (hex, inclusive)</label>
+      <input id="initRange" type="text" value="00-FF">
+      <div class="small muted">To fix a value, use the same start and end, e.g. <code>FF-FF</code></div>
+    </div>
+
+    <div class="field">
+      <label>XOR Out range (hex, inclusive)</label>
+      <input id="xorRange" type="text" value="00-00">
+    </div>
+
+    <div class="field">
+      <label>RefIn / RefOut</label>
+      <div class="chips">
+        <span class="chip active" data-ref="ff">RefIn=False, RefOut=False</span>
+        <span class="chip" data-ref="tt">RefIn=True, RefOut=True</span>
+        <span class="chip" data-ref="tf">RefIn=True, RefOut=False</span>
+        <span class="chip" data-ref="ft">RefIn=False, RefOut=True</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Byte order</label>
+      <div class="chips">
+        <span class="chip active" data-rev="false">Normal order</span>
+        <span class="chip" data-rev="true">Reverse bytes</span>
+      </div>
+    </div>
+
+
+  </div>
+
+  <div class="mt12 row">
+    <button id="btnSearch">Search</button>
+    <button id="btnStop" disabled>Stop</button>
+    <span class="muted" id="status"></span>
+  </div>
+
+  <div class="mt16">
+    <div class="muted small">Indicators (click a result row to preview):</div>
+    <pre id="indicatorsBox" class="small" style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:8px;overflow:auto"></pre>
+  </div>
+
+  <div class="mt16">
+    <div class="muted small">Matches:</div>
+    <table id="resultTable">
+      <thead>
+        <tr>
+          <th>Index</th>
+          <th>DataLen</th>
+          <th>Poly</th>
+          <th>Init</th>
+          <th>XorOut</th>
+          <th>RefIn</th>
+          <th>RefOut</th>
+          <th>RevBytes</th>
+          <th>Dir</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    function reflect8(n) {
+      let b = 0;
+      for (let i = 0; i < 8; i++) {
+        b = (b << 1) | (n & 1);
+        n >>= 1;
+      }
+      return b & 0xFF;
+    }
+
+    function crc8(dataBytes, poly, init, xorOut, refin, refout) {
+      let crc = init & 0xFF;
+      for (let i = 0; i < dataBytes.length; i++) {
+        let byte = dataBytes[i] & 0xFF;
+        if (refin) byte = reflect8(byte);
+        crc ^= byte;
+        for (let j = 0; j < 8; j++) {
+          if (crc & 0x80) {
+            crc = ((crc << 1) ^ poly) & 0xFF;
+          } else {
+            crc = (crc << 1) & 0xFF;
+          }
+        }
+      }
+      if (refout) crc = reflect8(crc);
+      return (crc ^ (xorOut & 0xFF)) & 0xFF;
+    }
+
+    function parseHexLine(line) {
+      let s = line.trim();
+      if (!s) return null;
+      // Parse entire line; allow 0x prefix and any separators
+      s = s.replace(/^0x/i, '');
+      s = s.replace(/[^0-9a-fA-F]/g, '');
+      if (s.length % 2 === 1) s = '0' + s;
+      const arr = [];
+      for (let i = 0; i < s.length; i += 2) {
+        arr.push(parseInt(s.substr(i, 2), 16));
+      }
+      if (arr.length < 2) return null;
+      return { bytes: arr };
+    }
+
+    function parseRange(text, maxN) {
+      const s = text.trim();
+      const m = s.match(/^([0-9a-fA-F]{1,2})\s*-\s*([0-9a-fA-F]{1,2})$/);
+      if (!m) throw new Error('Range must be AA-BB (hex)');
+      const a = parseInt(m[1], 16) & 0xFF;
+      const b = parseInt(m[2], 16) & 0xFF;
+      const start = Math.min(a, b);
+      const end = Math.max(a, b);
+      const out = [];
+      for (let v = start; v <= end; v++) out.push(v);
+      return out;
+    }
+
+    function parseLenRange(text, N) {
+      const s = text.trim();
+      if (s.toUpperCase() === '1-N') {
+        return Array.from({length: N}, (_, i) => i + 1);
+      }
+      const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (!m) throw new Error('Length range must be a-b or 1-N');
+      const a = Math.max(1, parseInt(m[1], 10));
+      const b = Math.min(N, parseInt(m[2], 10));
+      const start = Math.min(a, b);
+      const end = Math.max(a, b);
+      return Array.from({length: end - start + 1}, (_, i) => start + i);
+    }
+
+    function parsePolys(text) {
+      // Allow inline annotations, e.g., "07 (Dallas)"
+      return text.split(',').map(t => t.trim()).filter(Boolean).map(t => {
+        const hex = (t.match(/^[0-9a-fA-F]{1,2}$/) ? t : (t.match(/([0-9a-fA-F]{1,2})/) || [])[1]);
+        if (!hex) return null;
+        return parseInt(hex, 16) & 0xFF;
+      }).filter(v => v !== null);
+    }
+
+    function getSelectedRefModes() {
+      const chips = document.querySelectorAll('.chip[data-ref]');
+      const modes = [];
+      chips.forEach(c => { if (c.classList.contains('active')) modes.push(c.getAttribute('data-ref')); });
+      const out = [];
+      modes.forEach(k => {
+        if (k === 'ff') out.push([false, false]);
+        if (k === 'tt') out.push([true, true]);
+        if (k === 'tf') out.push([true, false]);
+        if (k === 'ft') out.push([false, true]);
+      });
+      return out.length ? out : [[false, false]];
+    }
+
+    function getRevBytesSelected() {
+      const chips = document.querySelectorAll('.chip[data-rev]');
+      const list = [];
+      chips.forEach(c => { if (c.classList.contains('active')) list.push(c.getAttribute('data-rev') === 'true'); });
+      return list.length ? list : [false];
+    }
+
+    
+
+    function setStatus(text) {
+      document.getElementById('status').textContent = text || '';
+    }
+
+    function hex2(v) { return ('0' + (v & 0xFF).toString(16)).slice(-2).toUpperCase(); }
+
+    function addRow(tbody, r) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r.indexDisplay}</td>
+        <td>${r.dataLen}</td>
+        <td>0x${hex2(r.poly)}</td>
+        <td>0x${hex2(r.init)}</td>
+        <td>0x${hex2(r.xorOut)}</td>
+        <td>${r.refin}</td>
+        <td>${r.refout}</td>
+        <td>${r.revBytes}</td>
+        <td>${r.dir}</td>
+      `;
+      tr.dataset.match = JSON.stringify(r._matchData);
+      tbody.appendChild(tr);
+    }
+
+    function bytesToHex(bytes) {
+      return bytes.map(b => hex2(b)).join('');
+    }
+
+    function buildIndicators(bytes, hitIndices) {
+      const hex = bytesToHex(bytes); // no spaces, 2 hex chars per byte
+      let caret = '  '; // offset for '0x'
+      for (let i = 0; i < bytes.length; i++) {
+        // two-character cell per byte to align with 2 hex chars
+        if (hitIndices.has(i)) {
+          caret += '^ ';
+        } else {
+          caret += '  ';
+        }
+      }
+      return '0x' + hex + '\n' + caret;
+    }
+
+    function showIndicatorMarks(samples, indices) {
+      const box = document.getElementById('indicatorsBox');
+      if (!samples.length) { box.textContent = ''; return; }
+      const first = samples[0].bytes;
+      const mark = new Set();
+      const list = Array.isArray(indices) ? indices : Array.from(indices || []);
+      list.forEach(i => {
+        if (typeof i === 'number' && i >= 0 && i < first.length) {
+          mark.add(i);
+        }
+      });
+      box.textContent = buildIndicators(first, mark);
+    }
+
+    function showIndicators(match, samples) {
+      const primaryHits = match.perLineHits[0] || [];
+      showIndicatorMarks(samples, primaryHits);
+    }
+
+    function windowsHaveVariation(samples, index, dataLen) {
+      if (samples.length === 0) return false;
+      const base = samples[0].bytes.slice(index + 1, index + 1 + dataLen).join(',');
+      for (let i = 1; i < samples.length; i++) {
+        const seq = samples[i].bytes.slice(index + 1, index + 1 + dataLen).join(',');
+        if (seq !== base) return true;
+      }
+      return false; // all identical
+    }
+
+    function onChipToggle(e) {
+      const el = e.target.closest('.chip');
+      if (!el) return;
+      el.classList.toggle('active');
+    }
+
+    const DEFAULT_SAMPLE_LINES = [
+      "0x013794A861FE7F00000000FE17FF130000",
+      "0x013794A861FE7F00000000FE17FF130000",
+      "0x010C95A861FE7F00000000FE17FF130000",
+      "0x014196A861FE7F00000000FE17FF130000",
+      "0x017A97A861FE7F00000000FE17FF130000",
+      "0x011E98A861FE7F00000000FE17FF130000",
+      "0x012599A861FE7F00000000FE17FF130000",
+      "0x01689AA861FE7F00000000FE17FF130000",
+      "0x01539BA861FE7F00000000FE17FF130000",
+      "0x01F29CA861FE7F00000000FE17FF130000",
+    ];
+
+    document.getElementById('inputData').setAttribute('placeholder', DEFAULT_SAMPLE_LINES.join('\n'));
+
+    async function runSearch() {
+      const btn = document.getElementById('btnSearch');
+      const btnStop = document.getElementById('btnStop');
+      btn.disabled = true; btnStop.disabled = false; setStatus('Parsing input...');
+      const inputEl = document.getElementById('inputData');
+      const raw = inputEl.value.trim();
+      const lines = raw ? raw.split(/\n+/) : DEFAULT_SAMPLE_LINES.slice();
+      const samples = [];
+      for (const line of lines) { const p = parseHexLine(line); if (p) samples.push(p); }
+      if (!samples.length) { setStatus('No valid samples'); btn.disabled = false; btnStop.disabled = true; return; }
+
+      let polys;
+      try { polys = parsePolys(document.getElementById('polys').value); } catch (e) { setStatus('Failed to parse polynomials'); btn.disabled = false; btnStop.disabled = true; return; }
+      if (!polys.length) { setStatus('Please provide at least one polynomial'); btn.disabled = false; btnStop.disabled = true; return; }
+
+      let inits, xors, lens;
+      try {
+        inits = parseRange(document.getElementById('initRange').value);
+        xors = parseRange(document.getElementById('xorRange').value);
+        const N = samples[0].bytes.length;
+        lens = Array.from({ length: N }, (_, i) => i + 1);
+      } catch (e) { setStatus(e.message); btn.disabled = false; btnStop.disabled = true; return; }
+
+      const refModes = getSelectedRefModes();
+      const revModes = getRevBytesSelected();
+      const requireSameIndex = true;
+      const requireUniquePerLine = true;
+
+      const tbody = document.querySelector('#resultTable tbody');
+      tbody.innerHTML = '';
+      document.getElementById('indicatorsBox').textContent = '';
+      const aggregateHits = new Set();
+
+      let matches = 0;
+      let tested = 0;
+      const totalCombos = polys.length * inits.length * xors.length * refModes.length * revModes.length * lens.length;
+      setStatus(`Searching... 0/${totalCombos}`);
+
+      // Odometer counters for incremental scanning
+      let iL = 0, iR = 0, iP = 0, iX = 0, iI = 0, iF = 0;
+      let cancelled = false;
+      const batchSize = 500; // combinations per tick
+      const dir = 'right';
+      const limit = 1000; // max rows rendered
+
+      function advance() {
+        iF++; if (iF < refModes.length) return true; iF = 0;
+        iI++; if (iI < inits.length) return true; iI = 0;
+        iX++; if (iX < xors.length) return true; iX = 0;
+        iP++; if (iP < polys.length) return true; iP = 0;
+        iR++; if (iR < revModes.length) return true; iR = 0;
+        iL++; if (iL < lens.length) return true; iL = 0;
+        return false; // done
+      }
+
+      function processCurrent() {
+        const dataLen = lens[iL];
+        const revBytes = revModes[iR];
+        const poly = polys[iP];
+        const xorOut = xors[iX];
+        const init = inits[iI];
+        const [refin, refout] = refModes[iF];
+        tested++;
+
+        let allHaveHit = true;
+        const perLineHits = [];
+        for (const s of samples) {
+          const arr = s.bytes;
+          const hits = [];
+          let idx = 0;
+          while (idx < arr.length) {
+            const start = idx + 1;
+            const end = idx + 1 + dataLen;
+            if (end > arr.length) { idx += 1; continue; }
+            const slice = arr.slice(start, end);
+            const bytes = revBytes ? slice.slice().reverse() : slice;
+            const c = crc8(bytes, poly, init, xorOut, refin, refout);
+            if ((arr[idx] & 0xFF) === c) { hits.push(idx); idx += dataLen + 1; } else { idx += 1; }
+          }
+          if (!hits.length) { allHaveHit = false; break; }
+          perLineHits.push(hits);
+        }
+        if (allHaveHit) {
+          if (!(requireUniquePerLine && !perLineHits.every(h => h.length === 1))) {
+            const firstIdx = perLineHits[0][0];
+            const same = perLineHits.every(h => h.length >= 1 && h[0] === firstIdx);
+            if (same && windowsHaveVariation(samples, firstIdx, dataLen)) {
+              if (matches < limit) {
+                addRow(tbody, { indexDisplay: String(firstIdx), dataLen, poly, init, xorOut, refin, refout, revBytes, dir,
+                  _matchData: { dataLen, poly, init, xorOut, refin, refout, revBytes, dir, perLineHits } });
+              }
+              matches++;
+              aggregateHits.add(firstIdx);
+              showIndicatorMarks(samples, Array.from(aggregateHits));
+            }
+          }
+        }
+      }
+
+      function tick() {
+        if (cancelled) { setStatus(`Stopped. Tested ${tested} of ${totalCombos}. Found ${matches}.`); btn.disabled = false; btnStop.disabled = true; return; }
+        let count = 0;
+        while (count < batchSize) {
+          processCurrent();
+          count++;
+          if (!advance()) break;
+        }
+        setStatus(`Searching... ${tested}/${totalCombos}. Matches: ${matches}`);
+        if (iL === 0 && iR === 0 && iP === 0 && iX === 0 && iI === 0 && iF === 0 && tested >= totalCombos) {
+          setStatus(`Done. Tested ${tested} combinations, found ${matches} matches. Showing ${Math.min(matches, limit)}.`);
+          btn.disabled = false; btnStop.disabled = true; return;
+        }
+        setTimeout(tick, 0);
+      }
+
+      function stopNow() { cancelled = true; }
+      btnStop.onclick = stopNow;
+      setTimeout(tick, 0);
+    }
+
+    // Event bindings
+    document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', onChipToggle));
+    document.getElementById('btnSearch').addEventListener('click', runSearch);
+    document.querySelector('#resultTable').addEventListener('click', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr || !tr.dataset.match) return;
+      const match = JSON.parse(tr.dataset.match);
+      const inputEl = document.getElementById('inputData');
+      const raw = inputEl.value.trim();
+      const lines = raw ? raw.split(/\n+/) : DEFAULT_SAMPLE_LINES.slice();
+      const samples = [];
+      for (const line of lines) { const p = parseHexLine(line); if (p) samples.push(p); }
+      showIndicators(match, samples);
+    });
+  </script>
+</body>
+</html>
+
+
