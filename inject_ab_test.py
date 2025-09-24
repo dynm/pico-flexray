@@ -51,6 +51,7 @@ def build_override_payload(frame_id: int, base: int, data_bytes: bytes) -> bytes
 # Initialize CANPacker with local DBC path
 _DBC_PATH = os.path.join(os.path.dirname(__file__), "dbc", "focus_on_lateral.dbc")
 _PACKER = CANPacker(_DBC_PATH)
+_DBC = _PACKER.dbc
 
 # Expose full-field packing for ACC so you can tune every field
 ACC_DEFAULTS = {
@@ -61,7 +62,7 @@ ACC_DEFAULTS = {
     "steering_angle_req": 0.0,
     "steer_torque_req": 0.0,
     "TJA_ready": 0,
-    "assist_mode": 1,
+    "assist_mode": 0,
     "wayback_en1_lane_keeping_trigger": 0,
     "lane_keeping_triggered": 0,
     "like_assist_torque_reserve": 0xA0,
@@ -72,24 +73,30 @@ ACC_DEFAULTS = {
     "maybe_assist_force_weaken": 0xfa,
 }
 
-# B8 61 FC 7F 02 01 00 AO FE 17 FF 23 A2 FA
-# 96 64 1f 80 00 01 00 a0 fe 17 ff 23 a2 fa
+#          B8 61 FC 7F 02 01 00 AO FE 17 FF 23 A2 FA
+#          96 64 1f 80 00 01 00 a0 fe 17 ff 23 a2 fa
+
+# 01 48 90 a8 61 fe 7f 00 01 00 a0 fe 17 ff 23 a2 fa
 
 
-def pack_acc_payload(values: dict) -> bytes:
+def pack_acc_payload(values: dict):
     """Pack the entire ACC payload bytes (17 bytes) using CANPacker.
 
     Note: crc1/cnt1 are not auto-computed for this custom DBC; set them explicitly if needed.
     """
     merged = dict(ACC_DEFAULTS)
     merged.update(values)
-    _, data, _ = _PACKER.make_can_msg("ACC", 0, merged)
-    return data
+    msg = _PACKER.make_can_msg("ACC", 0, merged)
+    return msg
 
 
 def build_frame(angle_deg: float, torque_nm: float) -> bytes:
-    data = pack_acc_payload({"steering_angle_req": angle_deg, "steer_torque_req": torque_nm})
-    return data[3:]
+    values = {"steering_angle_req": angle_deg, "steer_torque_req": torque_nm}
+    values["cycle_count"] = 1
+    values["crc1"] = 0x48 & 0xFF
+    values["cnt1"] = (0x48 >> 8) & 0b111
+    data = pack_acc_payload(values)
+    return data
 
 print(build_frame(30, 0.2).hex())
 
@@ -159,7 +166,7 @@ def print_help():
 def main() -> int:
     # Initial params
     mode = "A"  # A: angle-only, T: torque-only
-    angle_amp = 20.0  # deg peak for triangle wave
+    angle_amp = 100.0  # deg peak for triangle wave
     torque_amp = 0.2  # Nm amplitude for torque-only mode
     MAX_TORQUE = 0.3  # Absolute safety clamp in Nm
     half_period_s = 3.0
@@ -237,8 +244,9 @@ def main() -> int:
                 time.sleep(0.05)
             else:
                 # Build ACC override payload via DBC packing slice
-                payload = build_frame(angle_cmd, torque_cmd)
+                payload = build_frame(angle_cmd, 0)
                 buf = build_override_payload(0x48, 1, payload)
+                print(f"Hex: {buf.hex()} Angle: {angle_cmd}, Torque: {torque_cmd}")
                 try:
                     dev.write(EP_VENDOR_OUT, buf, timeout=1000)
                     send_count += 1
