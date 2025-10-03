@@ -18,7 +18,7 @@
 
 在开始我的项目之前，许多先行者基于 FPGA 的探索给了我巨大的启发。我所有关于 FlexRay 的研究都建立在他们工作的基础之上，在此向这些项目的作者们表示衷心的感谢：
 
-*   **Audi A4 B8 FlexRay Hacking**: [https://icanhack.nl/blog/audi-flexray/](https://icanhack.nl/blog/audi-flexray/)
+*   **Audi Q8 FlexRay Hacking**: [https://icanhack.nl/blog/audi-flexray/](https://icanhack.nl/blog/audi-flexray/)
 *   **Hacking an Audi: a man-in-the-middle attack on FlexRay**: [https://comma-ai.medium.com/hacking-an-audi-performing-a-man-in-the-middle-attack-on-flexray-2710b1d29f3f](https://comma-ai.medium.com/hacking-an-audi-performing-a-man-in-the-middle-attack-on-flexray-2710b1d29f3f)
 *   **FPGA based FlexRay Interceptor**: [https://github.com/dolson8874/flexray-interceptor/](https://github.com/dolson8874/flexray-interceptor/)
 

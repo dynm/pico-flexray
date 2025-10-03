@@ -18,7 +18,7 @@ Compared to familiar protocols like CAN or CAN-FD, performing a Man-in-the-Middl
 
 Before starting my project, I was greatly inspired by the pioneering work of others who explored FlexRay using FPGAs. All of my explorations are built upon their foundational efforts, and I extend my sincere gratitude to the authors of these projects:
 
-*   **Audi A4 B8 FlexRay Hacking**: [https://icanhack.nl/blog/audi-flexray/](https://icanhack.nl/blog/audi-flexray/)
+*   **Audi Q8 FlexRay Hacking**: [https://icanhack.nl/blog/audi-flexray/](https://icanhack.nl/blog/audi-flexray/)
 *   **Hacking an Audi: a man-in-the-middle attack on FlexRay**: [https://comma-ai.medium.com/hacking-an-audi-performing-a-man-in-the-middle-attack-on-flexray-2710b1d29f3f](https://comma-ai.medium.com/hacking-an-audi-performing-a-man-in-the-middle-attack-on-flexray-2710b1d29f3f)
 *   **FPGA based FlexRay Interceptor**: [https://github.com/dolson8874/flexray-interceptor/](https://github.com/dolson8874/flexray-interceptor/)
 
