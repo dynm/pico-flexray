@@ -1,0 +1,17 @@
+BO_ 72 ACC: 17 SAS
+ SG_ cycle_count M : 1|2@0+ (1,0) [0|63] "" XXX
+ SG_ crc1 m1 : 8|8@1+ (1,0) [0|255] "" XXX
+ SG_ cnt1 m1 : 16|4@1+ (1,0) [0|255] "" XXX
+ SG_ always_0x9 m1 : 20|4@1+ (1,0) [0|15] "" XXX
+ SG_ steering_angle_req m1 : 24|16@1+ (0.04,-1000) [0|31] "" XXX
+ SG_ steer_torque_req m1 : 40|16@1+ (0.006,-196.596) [0|255] "" XXX
+ SG_ TJA_ready m1 : 56|8@1+ (1,0) [0|255] "" XXX
+ SG_ assist_mode m1 : 65|2@0+ (1,0) [0|1] "" XXX
+ SG_ wayback_en1_lane_keeping_trigger m1 : 71|6@0+ (1,0) [0|1] "" XXX
+ SG_ lane_keeping_triggered m1 : 72|8@1+ (1,0) [0|255] "" XXX
+ SG_ like_assist_torque_reserve m1 : 80|8@1+ (1,0) [0|255] "" XXX
+ SG_ constants m1 : 88|26@1+ (1,0) [0|131071] "" XXX
+ SG_ wayback_en_2 m1 : 114|2@1+ (1,0) [0|1] "" XXX
+ SG_ steering_engaged m1 : 116|4@1+ (1,0) [0|255] "" XXX
+ SG_ maybe_assist_force_enhance m1 : 120|8@1+ (1,0) [0|255] "" XXX
+ SG_ maybe_assist_force_weaken m1 : 128|8@1+ (1,0) [0|255] "" XXX
