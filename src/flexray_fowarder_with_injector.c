@@ -221,14 +221,8 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
         return false;
     }
 
-    // check if bytes[0] == base
-    if (bytes[0] != base) {
-        return false;
-    }
-
-    // check if bytes[1]|bytes[2]<<8 == id
-    uint16_t id16 = (bytes[1]) | ((bytes[2]&0b111) << 8);
-    if (id16 != id) {
+    uint8_t crc = calculate_autosar_e2e_crc8(bytes+1, 0xf1, len-1);
+    if (crc != bytes[0]) {
         return false;
     }
 
