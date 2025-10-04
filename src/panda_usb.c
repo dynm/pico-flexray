@@ -244,7 +244,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         health->ignition_can_pkt = 1;
         health->controls_allowed_pkt = 1;
         health->car_harness_status_pkt = 1;
-        health->safety_mode_pkt = 1;
+        health->safety_mode_pkt = 17;
         health->safety_param_pkt = 0;
         health->fault_status_pkt = 0;
         health->power_save_enabled_pkt = 0;
@@ -327,9 +327,17 @@ static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *r
         handled = true;
         break;
 
+    case PANDA_SET_OBD_CAN_MUX_MODE:
+        handled = true;
+        break;
+
     case PANDA_SET_SAFETY_MODEL:
         panda_state.safety_model = request->wValue;
         // printf("Control Write: SET_SAFETY_MODEL -> %d, param %d\n", request->wValue, request->wIndex);
+        handled = true;
+        break;
+
+    case PANDA_SET_ALT_EXPERIENCE:
         handled = true;
         break;
 
