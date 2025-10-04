@@ -49,7 +49,7 @@ def build_override_payload(frame_id: int, base: int, data_bytes: bytes) -> bytes
     return header + data_bytes
 
 # Initialize CANPacker with local DBC path
-_DBC_PATH = os.path.join(os.path.dirname(__file__), "dbc", "focus_on_lateral.dbc")
+_DBC_PATH = os.path.join(os.path.dirname(__file__), "dbc", "lateral.dbc")
 _PACKER = CANPacker(_DBC_PATH)
 _DBC = _PACKER.dbc
 
@@ -89,13 +89,27 @@ def pack_acc_payload(values: dict):
     msg = _PACKER.make_can_msg("ACC", 0, merged)
     return msg
 
+def crc8_checksum(data: bytes, init_value: int) -> int:
+    """
+    Compute CRC-8 using polynomial 0x1D (MSB-first), no final XOR.
+    init_value is the initial CRC register value.
+    """
+    crc: int = init_value & 0xFF
+    for byte in data:
+        crc ^= byte & 0xFF
+        for _ in range(8):
+            if (crc & 0x80) != 0:
+                crc = ((crc << 1) ^ 0x1D) & 0xFF
+            else:
+                crc = (crc << 1) & 0xFF
+    return crc
 
 def build_frame(angle_deg: float, torque_nm: float) -> bytes:
     values = {"steering_angle_req": angle_deg, "steer_torque_req": torque_nm}
-    values["cycle_count"] = 1
-    values["crc1"] = 0x48 & 0xFF
-    values["cnt1"] = (0x48 >> 8) & 0b111
-    data = pack_acc_payload(values)
+    data = pack_acc_payload(values)[1]
+    crc = crc8_checksum(data[1:], 0xf1)
+    data = bytearray(data)
+    data[0] = crc
     return data
 
 print(build_frame(30, 0.2).hex())
