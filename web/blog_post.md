@@ -137,7 +137,7 @@ My current implementation supports two injection modes:
 
 *   **Partial Modification**
     *   **Pros**: Safer. We can modify only the direct control commands while preserving other signals in the frame, such as `gating` signals that enable or disable ADAS commands. This way, even if OpenPilot sends an erroneous command, it won't be executed if the car's ADAS function isn't active. Another benefit is preserving native features. If the car's AEB (Automatic Emergency Braking) signal is in the same frame as longitudinal control, our module can keep the native AEB active while OpenPilot is running (with just a one-cycle delay).
-    *   **Latency**: Since we modify a frame cached from the previous cycle, there is a one-cycle latency (typically 2ms - 20ms, depending on the manufacturer's configuration).
+    *   **Latency**: Since we modify a frame cached from the previous cycle, there is a one-cycle latency (typically 5ms - 20ms, depending on the manufacturer's configuration).
 
 *   **Full Replacement**
     *   **Pros**: More flexible. It allows for finer control from the OpenPilot side using `opendbc`, such as adjusting steering damping at different speeds.
