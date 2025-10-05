@@ -2,6 +2,7 @@
 
 ### pico-flexray — Low Cost FlexRay MITM Module
 <img src="./web/pico-flexray-bmw-g30.webp" alt="pico-flexray BMW G30 example" width="600"/>
+<img src="./web/openpilot-lateral-bmw-g30.webp" alt="OpenPilot BMW G30 example" width="600"/>
 
 A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards frames between ECU and vehicle transceivers, with optional test replay output and a Panda-compatible USB interface.
 
