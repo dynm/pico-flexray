@@ -64,6 +64,10 @@ static void print_ram_usage(void) {
 #define BGE_PIN 2
 #define STBN_PIN 3
 
+#define LED_PIN 20
+#define RELAY_FR_1_2 17
+#define RELAY_FR_3_4 18
+
 #define TXD_TO_ECU_PIN 4
 #define TXEN_TO_ECU_PIN 5
 #define RXD_FROM_ECU_PIN 6
@@ -147,6 +151,13 @@ void setup_pins(void)
     gpio_pull_up(RXD_FROM_ECU_PIN);
     gpio_pull_up(RXD_FROM_VEHICLE_PIN);
 
+    gpio_init(RELAY_FR_1_2);
+    gpio_set_dir(RELAY_FR_1_2, GPIO_OUT);
+    gpio_put(RELAY_FR_1_2, 1);
+    gpio_init(RELAY_FR_3_4);
+    gpio_set_dir(RELAY_FR_3_4, GPIO_OUT);
+    gpio_put(RELAY_FR_3_4, 1);
+
     // delay enabling pins to avoid glitch
     sleep_ms(100);
 
@@ -158,6 +169,10 @@ void setup_pins(void)
     gpio_init(7);
     gpio_set_dir(7, GPIO_OUT);
     gpio_put(7, 0);
+
+	// On-board LED
+	gpio_init(LED_PIN);
+	gpio_set_dir(LED_PIN, GPIO_OUT);
 }
 
 int main(void)
@@ -188,7 +203,7 @@ int main(void)
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
     printf("\n--- FlexRay Continuous Streaming Bridge (Forwarder Mode) ---\n");
 
-    setup_replay(pio1, REPLAY_TX_PIN);
+    // setup_replay(pio1, REPLAY_TX_PIN);
 
     multicore_launch_core1(core1_entry);
     sleep_ms(500);
@@ -202,7 +217,9 @@ int main(void)
 
     uint8_t temp_buffer[MAX_FRAME_BUF_SIZE_BYTES];
 
-    absolute_time_t next_stats_print_time = make_timeout_time_ms(5000);
+	absolute_time_t next_stats_print_time = make_timeout_time_ms(5000);
+	absolute_time_t next_led_toggle_time = make_timeout_time_ms(500);
+	bool led_on = false;
     // Track previous len_ok to compute parsed-frames FPS
     uint32_t prev_total = 0;
     uint32_t prev_valid = 0;
@@ -210,6 +227,12 @@ int main(void)
     while (true)
     {
         panda_usb_task();
+		if (time_reached(next_led_toggle_time))
+		{
+			next_led_toggle_time = make_timeout_time_ms(500);
+			led_on = !led_on;
+			gpio_put(LED_PIN, led_on);
+		}
         if (time_reached(next_stats_print_time))
         {
             next_stats_print_time = make_timeout_time_ms(5000);
