@@ -221,17 +221,6 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
 
     case PANDA_GET_HEALTH_PACKET:
         struct health_t * health = (struct health_t*)response_data;
-        health->heartbeat_lost_pkt = 0;
-        health->power_save_enabled_pkt = 0;
-        health->alternative_experience_pkt = 0;
-        health->interrupt_load_pkt = 0;
-        health->fan_power = 0;
-        health->safety_rx_checks_invalid_pkt = 0;
-        health->spi_error_count_pkt = 0;
-        health->fan_stall_count = 0;
-        health->sbu1_voltage_mV = 0;
-        health->sbu2_voltage_mV = 0;
-        health->som_reset_triggered = 0;
         health->uptime_pkt = 0;
         health->voltage_pkt = 0;
         health->current_pkt = 0;
@@ -254,7 +243,6 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         health->fan_power = 0;
         health->safety_rx_checks_invalid_pkt = 0;
         health->spi_error_count_pkt = 0;
-        health->fan_stall_count = 0;
         health->sbu1_voltage_mV = 0;
         health->sbu2_voltage_mV = 0;
         health->som_reset_triggered = 0;
@@ -283,7 +271,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
 
 
     case PANDA_GET_VERSIONS:
-        response_data[0] = 16;
+        response_data[0] = 17;
         response_data[1] = 4;
         response_data[2] = 5;
         response_len = 3;
