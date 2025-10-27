@@ -25,6 +25,7 @@ static struct
     uint8_t hw_type;
     uint8_t safety_model;
     bool initialized;
+    uint16_t alternative_experience;
 } panda_state;
 
 // Internal functions
@@ -90,6 +91,7 @@ void panda_usb_init(void)
     panda_state.hw_type = HW_TYPE_RED_PANDA;
     panda_state.safety_model = SAFETY_SILENT;
     panda_state.initialized = true;
+    panda_state.alternative_experience = 0;
 
     printf("Panda USB initialized - VID:0x%04x PID:0x%04x\n", 0x3801, 0xddcc);
     last_usb_activity = get_absolute_time();
@@ -238,7 +240,7 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         health->fault_status_pkt = 0;
         health->power_save_enabled_pkt = 0;
         health->heartbeat_lost_pkt = 0;
-        health->alternative_experience_pkt = 0;
+        health->alternative_experience_pkt = panda_state.alternative_experience;
         health->interrupt_load_pkt = 0;
         health->fan_power = 0;
         health->safety_rx_checks_invalid_pkt = 0;
@@ -326,6 +328,8 @@ static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *r
         break;
 
     case PANDA_SET_ALT_EXPERIENCE:
+        // Host writes two 16-bit values via wValue/wIndex. Save the first as alternative_experience.
+        panda_state.alternative_experience = (uint16_t)request->wValue;
         handled = true;
         break;
 
