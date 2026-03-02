@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlexRay Signal Generator</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ed; --muted: #8b90a0;
+    --accent: #6c8cff; --accent-hover: #8ba4ff;
+    --green: #4ade80; --red: #f87171; --orange: #fb923c;
+    --slot-active: #1e2a1e; --slot-border-active: #3a6b3a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 20px;
+  }
+  h1 { font-size: 1.3rem; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+  .subtitle { font-size: 0.75rem; color: var(--muted); margin-bottom: 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.1em; color: var(--muted); margin-bottom: 10px;
+  }
+  button {
+    font-family: inherit; font-size: 0.8rem; font-weight: 600;
+    padding: 8px 16px; border: none; border-radius: 5px;
+    cursor: pointer; transition: background 0.15s, opacity 0.15s;
+  }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-connect { background: var(--accent); color: #fff; }
+  .btn-connect:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-connect.connected { background: var(--green); color: var(--bg); }
+  .btn-start { background: var(--green); color: var(--bg); }
+  .btn-start:hover:not(:disabled) { background: #6ee7a0; }
+  .btn-stop { background: var(--red); color: #fff; }
+  .btn-stop:hover:not(:disabled) { background: #fca5a5; }
+  .conn-row { display: flex; align-items: center; gap: 12px; }
+  .status-dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 5px; background: var(--red);
+  }
+  .status-dot.connected { background: var(--green); }
+  #status-text { font-size: 0.75rem; color: var(--muted); }
+
+  /* FR channel grid */
+  .fr-row { margin-bottom: 10px; }
+  .fr-row:last-child { margin-bottom: 0; }
+  .fr-label {
+    font-size: 0.7rem; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .slot {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; transition: border-color 0.2s, background 0.2s;
+    min-height: 80px;
+  }
+  .slot.active { background: var(--slot-active); border-color: var(--slot-border-active); }
+  .slot-head {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  }
+  .slot-head label {
+    font-size: 0.6rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.03em; white-space: nowrap;
+  }
+  .slot input, .slot textarea {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+    color: var(--text); padding: 4px 6px;
+    font-family: inherit; font-size: 0.75rem;
+    outline: none; width: 100%;
+  }
+  .slot input:focus, .slot textarea:focus { border-color: var(--accent); }
+  .slot textarea { resize: none; min-height: 28px; font-size: 0.7rem; }
+  .slot-id { max-width: 72px; }
+  .slot-ind { max-width: 42px; }
+  .slot-tag {
+    font-size: 0.55rem; color: var(--muted); text-align: right; margin-top: 3px;
+  }
+  .slot-tag.ok { color: var(--green); }
+
+  /* Controls */
+  .ctrl-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .tx-badge {
+    font-size: 0.75rem; padding: 5px 10px; border-radius: 4px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+  }
+  .tx-badge.active { border-color: var(--green); color: var(--green); }
+
+  /* Log */
+  #log {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 0.7rem; line-height: 1.5;
+    max-height: 160px; overflow-y: auto; color: var(--muted);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #log .ok { color: var(--green); }
+  #log .err { color: var(--red); }
+  #log .info { color: var(--accent); }
+  #log .warn { color: var(--orange); }
+
+  @media (max-width: 700px) {
+    .slots { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<h1>FlexRay Signal Generator</h1>
+<p class="subtitle">4 channels &times; 4 slots &mdash; 200 Hz (5 ms), cycle auto-rolls 0&ndash;63</p>
+
+<!-- Connection -->
+<div class="card">
+  <div class="conn-row">
+    <button class="btn-connect" id="btn-connect" onclick="toggleConnect()">Connect</button>
+    <span><span class="status-dot" id="status-dot"></span><span id="status-text">Disconnected</span></span>
+  </div>
+</div>
+
+<!-- Frame Grid -->
+<div class="card" id="frame-grid"></div>
+
+<!-- Controls -->
+<div class="card">
+  <div class="ctrl-row">
+    <button class="btn-start" id="btn-start" disabled onclick="startAll()">Start 200 Hz</button>
+    <button class="btn-stop" id="btn-stop" disabled onclick="stopAll()">Stop</button>
+    <span class="tx-badge" id="tx-badge">Idle</span>
+  </div>
+</div>
+
+<!-- Log -->
+<div class="card">
+  <div class="card-title">Log</div>
+  <div id="log"></div>
+</div>
+
+<script>
+const VID = 0xCAFE, EP_OUT = 3, EP_IN = 1;
+const CMD_PING = 0x02, CMD_SET_SLOT = 0x03, CMD_CLEAR_SLOT = 0x04;
+const CMD_START = 0x05, CMD_STOP = 0x06, CMD_UPDATE = 0x07;
+const RSP_OK = 0x00, RSP_PONG = 0x03;
+const NUM_CH = 4, NUM_SLOTS = 4;
+
+let device = null, txRunning = false;
+
+function log(msg, cls='') {
+  const el = document.getElementById('log');
+  const s = document.createElement('span');
+  s.className = cls;
+  const ts = new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  s.textContent = `[${ts}] ${msg}\n`;
+  el.appendChild(s);
+  el.scrollTop = el.scrollHeight;
+  if (el.childNodes.length > 200) el.removeChild(el.firstChild);
+}
+
+function parseHex(s) {
+  s = s.trim();
+  if (!s) return NaN;
+  return s.startsWith('0x')||s.startsWith('0X') ? parseInt(s,16) : parseInt(s,10);
+}
+
+function parsePayload(s) {
+  s = s.trim();
+  if (!s) return new Uint8Array(0);
+  // Accept continuous hex like "0xAABBCC" or "AABBCC"
+  if (/^(0x)?[0-9a-fA-F]+$/.test(s)) {
+    let hex = s.startsWith('0x')||s.startsWith('0X') ? s.slice(2) : s;
+    if (hex.length & 1) hex = '0' + hex;
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++)
+      out[i] = parseInt(hex.substr(i*2, 2), 16);
+    return out;
+  }
+  // Space/comma separated bytes: "AA BB CC"
+  const parts = s.split(/[\s,]+/).filter(x=>x.length);
+  const out = new Uint8Array(parts.length);
+  for (let i=0;i<parts.length;i++) {
+    const v = parseInt(parts[i],16);
+    if (isNaN(v)||v<0||v>255) throw new Error(`Bad byte: "${parts[i]}"`);
+    out[i] = v;
+  }
+  return out;
+}
+
+const DEFAULTS = {
+  '0-0': { id: '1', data: 'A1 B2 C3 D4 E5 F6 07 18' },
+  '0-1': { id: '2', data: '1F 2E 3D 4C 5B 6A 79 88' },
+  '0-3': { id: '4', data: 'DE AD BE EF CA FE 01 02' },
+  '1-2': { id: '3', data: 'F0 E1 D2 C3 B4 A5 96 87' },
+};
+
+(function buildGrid(){
+  const grid = document.getElementById('frame-grid');
+  for (let ch=0; ch<NUM_CH; ch++) {
+    const row = document.createElement('div');
+    row.className = 'fr-row';
+    const label = document.createElement('div');
+    label.className = 'fr-label';
+    label.textContent = `FR${ch+1}`;
+    row.appendChild(label);
+
+    const slots = document.createElement('div');
+    slots.className = 'slots';
+    for (let s=0; s<NUM_SLOTS; s++) {
+      const def = DEFAULTS[`${ch}-${s}`] || {};
+      const cell = document.createElement('div');
+      cell.className = 'slot';
+      cell.id = `slot-${ch}-${s}`;
+      cell.innerHTML = `
+        <div class="slot-head">
+          <label>ID</label>
+          <input class="slot-id" id="id-${ch}-${s}" placeholder="0x___" value="${def.id||''}" oninput="onSlotEdit(${ch},${s})">
+          <label>Ind</label>
+          <input class="slot-ind" id="ind-${ch}-${s}" placeholder="00" value="00" oninput="onSlotEdit(${ch},${s})">
+        </div>
+        <textarea id="data-${ch}-${s}" placeholder="payload hex bytes" rows="1" oninput="onSlotEdit(${ch},${s})">${def.data||''}</textarea>
+        <div class="slot-tag" id="tag-${ch}-${s}">&mdash;</div>`;
+      slots.appendChild(cell);
+      if (def.id) setTimeout(() => onSlotEdit(ch, s), 0);
+    }
+    row.appendChild(slots);
+    grid.appendChild(row);
+  }
+})();
+
+function onSlotEdit(ch, s) {
+  const idVal = document.getElementById(`id-${ch}-${s}`).value.trim();
+  const cell = document.getElementById(`slot-${ch}-${s}`);
+  const tag = document.getElementById(`tag-${ch}-${s}`);
+  if (!idVal) {
+    cell.classList.remove('active');
+    tag.textContent = '\u2014';
+    tag.className = 'slot-tag';
+    return;
+  }
+  const fid = parseHex(idVal);
+  if (isNaN(fid) || fid < 0 || fid > 2047) {
+    tag.textContent = 'invalid ID';
+    tag.className = 'slot-tag';
+    cell.classList.remove('active');
+    return;
+  }
+  try {
+    const p = parsePayload(document.getElementById(`data-${ch}-${s}`).value);
+    if (p.length & 1) {
+      tag.textContent = `${p.length}B (must be even)`;
+      tag.className = 'slot-tag';
+    } else {
+      tag.textContent = `0x${fid.toString(16).padStart(3,'0')} \u2022 ${p.length}B`;
+      tag.className = 'slot-tag ok';
+      cell.classList.add('active');
+    }
+  } catch(e) {
+    tag.textContent = 'bad payload';
+    tag.className = 'slot-tag';
+  }
+}
+
+function setConnected(ok) {
+  document.getElementById('status-dot').classList.toggle('connected', ok);
+  document.getElementById('status-text').textContent = ok
+    ? `Connected \u2014 ${device.productName}` : 'Disconnected';
+  const btn = document.getElementById('btn-connect');
+  btn.textContent = ok ? 'Disconnect' : 'Connect';
+  btn.classList.toggle('connected', ok);
+  document.getElementById('btn-start').disabled = !ok;
+  document.getElementById('btn-stop').disabled = !ok;
+}
+
+function setTxState(on) {
+  txRunning = on;
+  const b = document.getElementById('tx-badge');
+  b.textContent = on ? 'Transmitting @ 200 Hz' : 'Idle';
+  b.classList.toggle('active', on);
+}
+
+async function toggleConnect() {
+  if (device) { await disconnect(); return; }
+  try {
+    device = await navigator.usb.requestDevice({filters:[{vendorId:VID}]});
+    await device.open();
+    if (device.configuration === null) await device.selectConfiguration(1);
+    await device.claimInterface(0);
+    setConnected(true);
+    log(`Connected to ${device.productName}`, 'ok');
+    await device.transferOut(EP_OUT, new Uint8Array([CMD_PING]));
+    const r = await device.transferIn(EP_IN, 64);
+    if (r.data && r.data.getUint8(0) === RSP_PONG)
+      log('Ping OK', 'ok');
+  } catch(e) {
+    log(`Connect failed: ${e.message}`, 'err');
+    device = null; setConnected(false);
+  }
+}
+
+async function disconnect() {
+  if (!device) return;
+  try { await device.close(); } catch(_) {}
+  device = null; setConnected(false); setTxState(false);
+  log('Disconnected', 'info');
+}
+
+async function sendCmd(pkt) {
+  await device.transferOut(EP_OUT, pkt);
+  const r = await device.transferIn(EP_IN, 64);
+  return r.data ? r.data.getUint8(0) : 0xFF;
+}
+
+function collectActiveSlots() {
+  const active = [];
+  for (let ch=0; ch<NUM_CH; ch++) {
+    for (let s=0; s<NUM_SLOTS; s++) {
+      const idStr = document.getElementById(`id-${ch}-${s}`).value.trim();
+      if (!idStr) continue;
+      const fid = parseHex(idStr);
+      if (isNaN(fid) || fid < 0 || fid > 2047) continue;
+      const indStr = document.getElementById(`ind-${ch}-${s}`).value.trim();
+      const ind = indStr ? (parseHex(indStr) & 0x1F) : 0;
+      const payload = parsePayload(document.getElementById(`data-${ch}-${s}`).value);
+      if (payload.length & 1) continue;
+      active.push({ch, s, fid, ind, payload});
+    }
+  }
+  return active;
+}
+
+async function startAll() {
+  if (!device) return;
+  try {
+    const slots = collectActiveSlots();
+    if (slots.length === 0) {
+      log('No valid slots configured', 'warn'); return;
+    }
+
+    // Clear all slots first
+    for (let ch=0; ch<NUM_CH; ch++)
+      for (let s=0; s<NUM_SLOTS; s++) {
+        const r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
+        if (r !== RSP_OK) { log(`Clear ch${ch+1} slot${s} failed`, 'err'); return; }
+      }
+
+    // Set active slots
+    for (const sl of slots) {
+      const pkt = new Uint8Array(8 + sl.payload.length);
+      pkt[0] = CMD_SET_SLOT;
+      pkt[1] = sl.ch + 1;
+      pkt[2] = sl.s;
+      pkt[3] = sl.fid & 0xFF;
+      pkt[4] = (sl.fid >> 8) & 0xFF;
+      pkt[5] = sl.ind;
+      pkt[6] = sl.payload.length & 0xFF;
+      pkt[7] = (sl.payload.length >> 8) & 0xFF;
+      pkt.set(sl.payload, 8);
+      const r = await sendCmd(pkt);
+      if (r !== RSP_OK) {
+        log(`Set FR${sl.ch+1} slot${sl.s} id=0x${sl.fid.toString(16).padStart(3,'0')} failed`, 'err');
+        return;
+      }
+      log(`Set FR${sl.ch+1}[${sl.s}] id=0x${sl.fid.toString(16).padStart(3,'0')} ${sl.payload.length}B`, 'info');
+    }
+
+    // Start
+    const r = await sendCmd(new Uint8Array([CMD_START]));
+    if (r === RSP_OK) {
+      setTxState(true);
+      log(`Started ${slots.length} slot(s) @ 200 Hz`, 'ok');
+    } else {
+      log('Start failed', 'err');
+    }
+  } catch(e) { log(`Error: ${e.message}`, 'err'); }
+}
+
+async function stopAll() {
+  if (!device) return;
+  try {
+    const r = await sendCmd(new Uint8Array([CMD_STOP]));
+    if (r === RSP_OK) { setTxState(false); log('Stopped', 'ok'); }
+  } catch(e) { log(`Error: ${e.message}`, 'err'); }
+}
+
+navigator.usb.addEventListener('disconnect', e => {
+  if (device && e.device === device) {
+    device = null; setConnected(false); setTxState(false);
+    log('Device disconnected', 'warn');
+  }
+});
+
+log('Fill in Frame IDs and payloads, then click Start', 'info');
+log('Cycle count auto-rolls 0\u201363 at 200 Hz on all active slots', 'info');
+</script>
+</body>
+</html>

@@ -5,12 +5,8 @@
 extern "C" {
 #endif
 
-//--------------------------------------------------------------------
-// COMMON CONFIGURATION
-//--------------------------------------------------------------------
 #define CFG_TUD_ENABLED         (1)
 
-// Legacy RHPORT configuration
 #define CFG_TUSB_RHPORT0_MODE   (OPT_MODE_DEVICE | OPT_MODE_FULL_SPEED)
 #ifndef BOARD_TUD_RHPORT
 #define BOARD_TUD_RHPORT        (0)
@@ -26,21 +22,15 @@ extern "C" {
 #define CFG_TUD_ENDPOINT0_SIZE  (64)
 #endif
 
-//--------------------------------------------------------------------
-// DEVICE CONFIGURATION
-//--------------------------------------------------------------------
-
-// Vendor class for Panda protocol
+// Vendor class for WebUSB bulk transfers
 #define CFG_TUD_VENDOR            1
-#define CFG_TUD_VENDOR_RX_BUFSIZE 4096
-#define CFG_TUD_VENDOR_TX_BUFSIZE 8192
+#define CFG_TUD_VENDOR_RX_BUFSIZE 512
+#define CFG_TUD_VENDOR_TX_BUFSIZE 512
 
-// Enable debug for troubleshooting (only if not already defined)
 #ifndef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG            0
 #endif
 
-// Disable other classes
 #define CFG_TUD_CDC               0
 #define CFG_TUD_MSC               0
 #define CFG_TUD_HID               0
@@ -56,4 +46,4 @@ extern "C" {
 }
 #endif
 
-#endif /* _TUSB_CONFIG_H_ */ 
+#endif /* _TUSB_CONFIG_H_ */

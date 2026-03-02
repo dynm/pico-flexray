@@ -1,120 +1,89 @@
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dynm/pico-flexray)
+# FlexRay Signal Generator
 
-### pico-flexray — Low Cost FlexRay MITM Module
-<img src="./imgs/pico-flexray-bmw-g30.webp" alt="pico-flexray BMW G30 example" width="600"/>
-<img src="./imgs/openpilot-lateral-bmw-g30.webp" alt="OpenPilot BMW G30 example" width="600"/>
+A standalone FlexRay signal generator built on Raspberry Pi Pico 2 (RP2350). Generates proper FlexRay wire-level signals at 10 Mbit/s via PIO, controlled from a browser over WebUSB.
 
-A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards frames between ECU and vehicle transceivers, with optional test replay output and a Panda-compatible USB interface.
+## Features
 
-- Core features:
-  - Continuous, bidirectional FlexRay frame forwarding (vehicle ↔ ECU)
-  - Optional replay/test output via a dedicated GPIO
-  - USB interface is Panda-compatible
-  - FlexRay MITM Done
+- **200 Hz continuous transmission** — frames repeat every 5 ms with auto-incrementing cycle count (0–63)
+- **4 independent FR channels** — each with its own PIO state machine and DMA
+- **Proper FlexRay framing** — TSS, FSS, BSS, 8-bit data, FES, with TX_EN driven via PIO side-set
+- **CRC calculation** — 11-bit header CRC and 24-bit frame CRC computed on-device
+- **WebUSB** — driverless browser pairing (Chrome), no host software required
+- **One-shot mode** — send a single frame for testing
+- **Live payload update** — change data on a running channel without restarting
 
-### Hardware connections
-1. For read-only FlexRay frame capture, connect a single transceiver to the vehicle’s bus, attach its BP/BM lines to the FlexRay lines in your vehicle.
-2. To differentiate frames from the ECU and the vehicle, use a man-in-the-middle (MITM) setup: split the original FlexRay cable and connect each half to its own transceiver with separate BP/BM pairs—one transceiver for the ECU side, one for the vehicle side.
-3. To perform a test, connect the REPLAY_TX pin to either RXD_FROM_ECU or RXD_FROM_VEHICLE. This will allow you to observe frames in Cabana.
+## Pin Assignments
 
-Refer to your board’s pinout for physical pad/header locations. Signals below use Pico GPIO numbers as configured in `src/main.c`.
+| GPIO | Signal | Function |
+|-----:|--------|----------|
+| 2 | BGE | Transceiver bus-guard enable (high = on) |
+| 3 | STBN | Transceiver standby (high = active) |
+| 28 | TXD_FR1 | TX data to FR1 transceiver |
+| 27 | TXEN_FR1 | TX enable for FR1 (active low) |
+| 4 | TXD_FR2 | TX data to FR2 transceiver |
+| 5 | TXEN_FR2 | TX enable for FR2 (active low) |
+| 10 | TXD_FR3 | TX data to FR3 transceiver |
+| 9 | TXEN_FR3 | TX enable for FR3 (active low) |
+| 16 | TXD_FR4 | TX data to FR4 transceiver |
+| 22 | TXEN_FR4 | TX enable for FR4 (active low) |
+| 20 | LED | Status LED |
 
-| GPIO | Signal | Direction | Side | Notes |
-|---:|---|---|---|---|
-| 2 | `BGE` | Output | Both | BGE to FlexRay transceivers (set High to enable)
-| 3 | `STBN` | Output | Both | STBN to transceivers (set High to exit standby)
-| 4 | `TXD_TO_ECU` | Output | ECU | TXD to ECU-side transceiver
-| 5 | `TXEN_TO_ECU` | Output | ECU | TX_EN for ECU-side transceiver
-| 6 | `RXD_FROM_ECU` | Input | ECU | RXD from ECU-side transceiver
-| 28 | `TXD_TO_VEHICLE` | Output | Vehicle | TXD to vehicle-side transceiver
-| 27 | `TXEN_TO_VEHICLE` | Output | Vehicle | TX_EN for vehicle-side transceiver
-| 26 | `RXD_FROM_VEHICLE` | Input | Vehicle | RXD from vehicle-side transceiver
-| 15 | `REPLAY_TX` | Output | Test | PIO replay/test sample FlexRay frame output
-| 7 | `ISR` | Output | Measurement | Use a logic analyzer to measure the frame preparation time consumption.
+Compatible transceivers (active-low TX_EN): TLE9222, TJA1082, NCV7383.
 
-![Wiring diagram](imgs/wiring.png)
-**Note:**  
-You can use any FlexRay transceiver you have available. The following transceivers are pin-to-pin compatible and can be used interchangeably:
-- TLE9222
-- TJA1082
-- NCV7383
-
-
-### Build and flash
+## Build
 
 ```bash
-git clone https://github.com/dynm/pico-flexray/
-cd pico-flexray
+mkdir -p build && cd build
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
+ninja
 ```
 
-Option 1: Visual Studio Code
-1. Install the [Raspberry Pi Pico extension](https://marketplace.visualstudio.com/items?itemName=raspberry-pi.raspberry-pi-pico)
-2. Open this repo, do not enable RISC-V instructions
-3. Click the Pico extension tab on the left panel
-4. Click "Switch Board" and select your Pico board
-5. Hold BOOT, plug USB, then you can release BOOT
-6. Click "Run Project (USB)"
-7. Done!
+Output: `build/flexray_signal_gen.uf2`
 
-Option 2: Command line
-Prerequisites:
-- Raspberry Pi Pico SDK 2.1.x (env var `PICO_SDK_PATH` or the VS Code Pico extension auto-setup)
-- `picotool` for flashing, or UF2 drag-and-drop
+## Flash
 
-Configure and build (default board is set in `CMakeLists.txt` to `pico2`):
+Hold BOOTSEL, plug USB, copy `flexray_signal_gen.uf2` to the RPI-RP2 drive.
+
+Or with picotool:
 
 ```bash
-cd pico-flexray
-mkdir build && cd build
-ninja -C build
+picotool load -f build/flexray_signal_gen.uf2
 ```
 
-Artifacts are produced in `build/` (e.g., `pico_flexray.uf2`, `pico_flexray.elf`).
+## Web Interface
 
-Flash to device:
-- UF2: Hold BOOT, plug USB, then copy `build/pico_flexray.uf2` to the RPI-RP2 mass storage device.
-- Picotool: put the board in BOOTSEL or use reset-to-boot, then:
+Open `web/signal_gen.html` in Chrome (or serve it over HTTPS).
 
-```bash
-picotool load -f build/pico_flexray.uf2
+1. Click **Connect** — Chrome will show the WebUSB pairing dialog
+2. Set frame ID, payload (hex), target channel
+3. Click **Start 200 Hz** for continuous transmission, or **Send Once** for a single frame
+4. Click **Stop** to halt
+
+## USB Protocol
+
+VID `0xCAFE` / PID `0x4004`, vendor-class bulk endpoints.
+
+| CMD | Name | Payload |
+|-----|------|---------|
+| `0x01` | Send Once | `[ch][id:2LE][cycle][ind][len:2LE][data...]` |
+| `0x02` | Ping | — (returns `0x03`) |
+| `0x03` | Start 200 Hz | same as Send Once |
+| `0x04` | Stop | `[ch]` |
+| `0x05` | Update Payload | `[ch][len:2LE][data...]` |
+
+Response: `[status]` where `0x00` = OK.
+
+## Project Structure
+
 ```
-
-Run-time:
-- USB enumerates as a vendor-specific device (no CDC serial). Use UART for logs.
-- On boot, the app prints pin assignments and status, enables transceivers, and starts forwarding.
-
-### Adjusting pins or board
-
-If you use a different board or wiring, update the GPIO defines at the top of `src/main.c` and/or modify set(PICO_BOARD pico2 CACHE STRING "Board type") in CMakeLists.txt. Rebuild and reflash.
-
-### Streaming with Cabana
-
-To visualize FlexRay data using Cabana:
-
-1. Clone the OpenPilot repository and switch to the FlexRay-enabled branch:
-   ```bash
-   git clone https://github.com/dynm/openpilot
-   cd openpilot
-   git checkout cabana-flexray
-   ```
-
-2. Set up the environment:
-   ```bash
-   ./tools/op.sh setup
-   ```
-
-3. Build Cabana:
-   ```bash
-   source .venv/bin/activate
-   scons -j$(nproc) tools/cabana/cabana
-   ```
-
-4. Launch Cabana:
-   ```bash
-   ./tools/cabana/cabana
-   ```
-
-5. Testing:
-   If you want to develop without transceivers and are using only a single Pico board,
-   connect REPLAY_TX to RXD_FROM_ECU or RXD_FROM_VEHICLE with a jumper wire.
-   You will then see frames in Cabana.
+signal_gen/
+  main.c                   Entry point, USB command dispatch, main loop
+  flexray_signal_gen.c/h   Frame construction, PIO/DMA, 200 Hz scheduler
+  flexray_signal_gen.pio   PIO program (FlexRay wire-level signal generation)
+  flexray_frame.c/h        FlexRay CRC-11 and CRC-24 calculation
+  flexray_crc_table.h      Precomputed CRC lookup tables
+  usb_descriptors.c        WebUSB + WinUSB descriptors
+  tusb_config.h            TinyUSB configuration
+web/
+  signal_gen.html           WebUSB browser interface
+```
