@@ -341,11 +341,17 @@ async function startAll() {
       log('No valid slots configured', 'warn'); return;
     }
 
-    // Clear all slots first
+    // Wake/sync device so first transferIn doesn't timeout after idle
+    await sendCmd(new Uint8Array([CMD_PING]));
+
+    // Clear all slots first (retry once per slot on first-time failure)
     for (let ch=0; ch<NUM_CH; ch++)
       for (let s=0; s<NUM_SLOTS; s++) {
-        const r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
-        if (r !== RSP_OK) { log(`Clear ch${ch+1} slot${s} failed`, 'err'); return; }
+        let r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
+        if (r !== RSP_OK) {
+          r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
+          if (r !== RSP_OK) { log(`Clear ch${ch+1} slot${s} failed`, 'err'); return; }
+        }
       }
 
     // Set active slots
