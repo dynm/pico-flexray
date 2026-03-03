@@ -34,6 +34,7 @@ void signal_gen_stop(void);
 bool signal_gen_is_running(void);
 
 // Call from main loop — drives the 200 Hz periodic transmissions.
-void signal_gen_tick(void);
+// Returns bitmask of channels that transmitted (bit 0 = ch0, etc.).
+uint8_t signal_gen_tick(void);
 
 #endif // FLEXRAY_SIGNAL_GEN_H

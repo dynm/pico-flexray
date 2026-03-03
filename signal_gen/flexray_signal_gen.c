@@ -212,17 +212,16 @@ bool signal_gen_is_running(void)
     return running;
 }
 
-void signal_gen_tick(void)
+uint8_t signal_gen_tick(void)
 {
-    if (!running) return;
+    if (!running) return 0;
 
     absolute_time_t now = get_absolute_time();
-    if (!time_reached(next_tx_time)) return;
+    if (!time_reached(next_tx_time)) return 0;
 
+    uint8_t tx_mask = 0;
     absolute_time_t tick_start = get_absolute_time();
 
-    // Walk through all 4 slot positions at fixed intervals.
-    // All channels transmit the same slot position in parallel.
     for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++) {
         absolute_time_t slot_start = delayed_by_us(tick_start,
                                                     s * slot_duration_us);
@@ -235,10 +234,10 @@ void signal_gen_tick(void)
 
             wait_for_pio_idle(ch);
             start_frame(ch, &ch->slots[s], cycle_count);
+            tx_mask |= (1u << c);
         }
     }
 
-    // Wait for all channels to finish their last frame
     for (uint c = 0; c < SIGNAL_GEN_MAX_CHANNELS; c++)
         if (chans[c].hw_ready)
             wait_for_pio_idle(&chans[c]);
@@ -249,4 +248,6 @@ void signal_gen_tick(void)
 
     if (absolute_time_diff_us(next_tx_time, now) > FLEXRAY_CYCLE_PERIOD_US)
         next_tx_time = delayed_by_us(now, FLEXRAY_CYCLE_PERIOD_US);
+
+    return tx_mask;
 }

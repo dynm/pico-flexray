@@ -9,7 +9,8 @@
 
 #define BGE_PIN        2
 #define STBN_PIN       3
-#define LED_PIN        20
+#define LED_FR12_PIN   19
+#define LED_FR34_PIN   20
 #define RELAY_FR_1_2   17
 #define RELAY_FR_3_4   18
 
@@ -55,8 +56,10 @@ static void setup_pins(void)
     gpio_pull_up(TXEN_FR3);
     gpio_pull_up(TXEN_FR4);
 
-    gpio_init(LED_PIN);
-    gpio_set_dir(LED_PIN, GPIO_OUT);
+    gpio_init(LED_FR12_PIN);
+    gpio_set_dir(LED_FR12_PIN, GPIO_OUT);
+    gpio_init(LED_FR34_PIN);
+    gpio_set_dir(LED_FR34_PIN, GPIO_OUT);
 
     // Set relays to connect FlexRay bus
     gpio_init(RELAY_FR_1_2);
@@ -194,18 +197,12 @@ int main(void)
 
     printf("Ready — connect via WebUSB\n");
 
-    bool led_on = false;
-    absolute_time_t next_led = make_timeout_time_ms(500);
-
     while (true) {
         tud_task();
-        signal_gen_tick();
+        uint8_t tx_mask = signal_gen_tick();
 
-        if (time_reached(next_led)) {
-            next_led = make_timeout_time_ms(500);
-            led_on = !led_on;
-            gpio_put(LED_PIN, led_on);
-        }
+        gpio_put(LED_FR12_PIN, (tx_mask & 0x03) != 0);
+        gpio_put(LED_FR34_PIN, (tx_mask & 0x0C) != 0);
     }
     return 0;
 }
