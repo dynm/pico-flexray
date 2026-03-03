@@ -41,6 +41,8 @@
   .btn-start:hover:not(:disabled) { background: #6ee7a0; }
   .btn-stop { background: var(--red); color: #fff; }
   .btn-stop:hover:not(:disabled) { background: #fca5a5; }
+  .btn-bootloader { background: var(--orange); color: var(--bg); }
+  .btn-bootloader:hover:not(:disabled) { background: #fdba74; }
   .conn-row { display: flex; align-items: center; gap: 12px; }
   .status-dot {
     display: inline-block; width: 8px; height: 8px;
@@ -120,6 +122,7 @@
 <div class="card">
   <div class="conn-row">
     <button class="btn-connect" id="btn-connect" onclick="toggleConnect()">Connect</button>
+    <button class="btn-bootloader" id="btn-bootloader" disabled onclick="rebootBootloader()">Boot to bootloader</button>
     <span><span class="status-dot" id="status-dot"></span><span id="status-text">Disconnected</span></span>
   </div>
 </div>
@@ -146,6 +149,7 @@
 const VID = 0xCAFE, EP_OUT = 3, EP_IN = 1;
 const CMD_PING = 0x02, CMD_SET_SLOT = 0x03, CMD_CLEAR_SLOT = 0x04;
 const CMD_START = 0x05, CMD_STOP = 0x06, CMD_UPDATE = 0x07;
+const CMD_BOOTLOADER = 0x08;
 const RSP_OK = 0x00, RSP_PONG = 0x03;
 const NUM_CH = 4, NUM_SLOTS = 4;
 
@@ -274,6 +278,7 @@ function setConnected(ok) {
   btn.classList.toggle('connected', ok);
   document.getElementById('btn-start').disabled = !ok;
   document.getElementById('btn-stop').disabled = !ok;
+  document.getElementById('btn-bootloader').disabled = !ok;
 }
 
 function setTxState(on) {
@@ -390,6 +395,17 @@ async function stopAll() {
   try {
     const r = await sendCmd(new Uint8Array([CMD_STOP]));
     if (r === RSP_OK) { setTxState(false); log('Stopped', 'ok'); }
+  } catch(e) { log(`Error: ${e.message}`, 'err'); }
+}
+
+async function rebootBootloader() {
+  if (!device) return;
+  try {
+    await device.transferOut(EP_OUT, new Uint8Array([CMD_BOOTLOADER]));
+    log('Bootloader command sent — Pico will reboot; reconnect to flash UF2', 'warn');
+    device = null;
+    setConnected(false);
+    setTxState(false);
   } catch(e) { log(`Error: ${e.message}`, 'err'); }
 }
 
