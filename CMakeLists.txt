@@ -46,6 +46,7 @@ pico_enable_stdio_uart(flexray_signal_gen 1)
 
 target_link_libraries(flexray_signal_gen
     hardware_gpio
+    hardware_pwm
     pico_stdlib
     tinyusb_device
     hardware_dma

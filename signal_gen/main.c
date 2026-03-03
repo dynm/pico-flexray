@@ -1,10 +1,13 @@
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "pico/time.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "hardware/pwm.h"
 #include "tusb.h"
+#include "pico/bootrom.h"
 #include "flexray_signal_gen.h"
 
 #define BGE_PIN        2
@@ -23,6 +26,39 @@
 #define TXD_FR4  16
 #define TXEN_FR4 22
 
+// PWM configuration for LEDs – keep brightness low to avoid glare
+#define LED_PWM_WRAP            1023u
+#define LED_IDLE_MAX_LEVEL      128u   // peak duty in idle breathing
+#define LED_ACTIVE_LEVEL        128u   // on level when transmitting
+#define LED_BREATH_PERIOD_MS    2000u
+#define LED_BREATH_HALF_PERIOD_MS (LED_BREATH_PERIOD_MS / 2u)
+
+static uint led12_slice;
+static uint led12_chan;
+static uint led34_slice;
+static uint led34_chan;
+
+static inline void led_set_levels(uint16_t level12, uint16_t level34)
+{
+    if (level12 > LED_PWM_WRAP) level12 = LED_PWM_WRAP;
+    if (level34 > LED_PWM_WRAP) level34 = LED_PWM_WRAP;
+
+    pwm_set_chan_level(led12_slice, led12_chan, level12);
+    pwm_set_chan_level(led34_slice, led34_chan, level34);
+}
+
+static uint16_t led_calc_idle_breath_level(void)
+{
+    uint32_t t = to_ms_since_boot(get_absolute_time()) % LED_BREATH_PERIOD_MS;
+    uint32_t phase = (t < LED_BREATH_HALF_PERIOD_MS)
+                     ? t
+                     : (LED_BREATH_PERIOD_MS - t);
+    uint32_t level = (phase * LED_IDLE_MAX_LEVEL) / LED_BREATH_HALF_PERIOD_MS;
+
+    if (level < 2u) level = 2u;
+    return (uint16_t)level;
+}
+
 // USB protocol
 // CMD_SET_SLOT:   [0x03][ch 1-4][slot 0-3][fid:2LE][ind][plen:2LE][payload...]
 // CMD_CLEAR_SLOT: [0x04][ch 1-4][slot 0-3]
@@ -30,12 +66,14 @@
 // CMD_STOP:       [0x06]
 // CMD_UPDATE:     [0x07][ch 1-4][slot 0-3][plen:2LE][payload...]
 // CMD_PING:       [0x02]
+// CMD_BOOTLOADER: [0x08] — reboot into USB bootloader
 #define CMD_PING        0x02
 #define CMD_SET_SLOT    0x03
 #define CMD_CLEAR_SLOT  0x04
 #define CMD_START       0x05
 #define CMD_STOP        0x06
 #define CMD_UPDATE      0x07
+#define CMD_BOOTLOADER  0x08
 
 #define RSP_OK          0x00
 #define RSP_ERR_INVALID 0x01
@@ -56,10 +94,27 @@ static void setup_pins(void)
     gpio_pull_up(TXEN_FR3);
     gpio_pull_up(TXEN_FR4);
 
-    gpio_init(LED_FR12_PIN);
-    gpio_set_dir(LED_FR12_PIN, GPIO_OUT);
-    gpio_init(LED_FR34_PIN);
-    gpio_set_dir(LED_FR34_PIN, GPIO_OUT);
+    // Configure LEDs for PWM so we can run a low-brightness breathing pattern
+    gpio_set_function(LED_FR12_PIN, GPIO_FUNC_PWM);
+    gpio_set_function(LED_FR34_PIN, GPIO_FUNC_PWM);
+
+    led12_slice = pwm_gpio_to_slice_num(LED_FR12_PIN);
+    led12_chan  = pwm_gpio_to_channel(LED_FR12_PIN);
+    led34_slice = pwm_gpio_to_slice_num(LED_FR34_PIN);
+    led34_chan  = pwm_gpio_to_channel(LED_FR34_PIN);
+
+    pwm_set_wrap(led12_slice, LED_PWM_WRAP);
+    if (led34_slice != led12_slice) {
+        pwm_set_wrap(led34_slice, LED_PWM_WRAP);
+    }
+
+    pwm_set_chan_level(led12_slice, led12_chan, 0);
+    pwm_set_chan_level(led34_slice, led34_chan, 0);
+
+    pwm_set_enabled(led12_slice, true);
+    if (led34_slice != led12_slice) {
+        pwm_set_enabled(led34_slice, true);
+    }
 
     // Set relays to connect FlexRay bus
     gpio_init(RELAY_FR_1_2);
@@ -146,6 +201,14 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         break;
     }
 
+    case CMD_BOOTLOADER:
+        send_response(RSP_OK);
+        tud_task();
+        tud_vendor_write_flush();
+        sleep_ms(20);
+        reset_usb_boot(0, 0);
+        break;
+
     default:
         send_response(RSP_ERR_INVALID);
         break;
@@ -199,10 +262,17 @@ int main(void)
 
     while (true) {
         tud_task();
-        uint8_t tx_mask = signal_gen_tick();
+        bool running = signal_gen_is_running();
+        uint8_t tx_mask = running ? signal_gen_tick() : 0;
 
-        gpio_put(LED_FR12_PIN, (tx_mask & 0x03) != 0);
-        gpio_put(LED_FR34_PIN, (tx_mask & 0x0C) != 0);
+        if (running) {
+            uint16_t lvl12 = (tx_mask & 0x03u) ? LED_ACTIVE_LEVEL : 0u;
+            uint16_t lvl34 = (tx_mask & 0x0Cu) ? LED_ACTIVE_LEVEL : 0u;
+            led_set_levels(lvl12, lvl34);
+        } else {
+            uint16_t breath = led_calc_idle_breath_level();
+            led_set_levels(breath, breath);
+        }
     }
     return 0;
 }
