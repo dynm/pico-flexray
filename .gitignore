@@ -5,3 +5,4 @@ unused
 .cache
 __pycache__
 *.csv
+web/index.html

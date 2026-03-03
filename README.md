@@ -52,7 +52,7 @@ picotool load -f build/flexray_signal_gen.uf2
 
 ## Web Interface
 
-Open `web/signal_gen.html` in Chrome (or serve it over HTTPS).
+Open `web/signal_gen.html` in Chrome (or serve it over HTTPS), or use https://generator.pico-flexray.xyz/ to get the web interface.
 
 1. Click **Connect** — Chrome will show the WebUSB pairing dialog
 2. Set frame ID, payload (hex), target channel
