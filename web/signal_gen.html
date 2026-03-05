@@ -51,27 +51,21 @@
   .status-dot.connected { background: var(--green); }
   #status-text { font-size: 0.75rem; color: var(--muted); }
 
-  /* FR channel grid */
-  .fr-row { margin-bottom: 10px; }
-  .fr-row:last-child { margin-bottom: 0; }
-  .fr-label {
-    font-size: 0.7rem; font-weight: 700; color: var(--accent);
-    text-transform: uppercase; letter-spacing: 0.05em;
-    margin-bottom: 6px;
-  }
-  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  /* Slot definition row */
+  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
   .slot {
     background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
     padding: 10px; transition: border-color 0.2s, background 0.2s;
-    min-height: 80px;
   }
   .slot.active { background: var(--slot-active); border-color: var(--slot-border-active); }
-  .slot-head {
-    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+  .slot-label {
+    font-size: 0.65rem; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;
   }
-  .slot-head label {
+  .slot-field { margin-bottom: 5px; }
+  .slot-field label {
     font-size: 0.6rem; color: var(--muted); text-transform: uppercase;
-    letter-spacing: 0.03em; white-space: nowrap;
+    letter-spacing: 0.03em; display: block; margin-bottom: 2px;
   }
   .slot input, .slot textarea {
     background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
@@ -81,12 +75,34 @@
   }
   .slot input:focus, .slot textarea:focus { border-color: var(--accent); }
   .slot textarea { resize: none; min-height: 28px; font-size: 0.7rem; }
-  .slot-id { max-width: 72px; }
-  .slot-ind { max-width: 42px; }
+  .slot-id-ind { display: flex; gap: 6px; }
+  .slot-id-ind .fid { flex: 1; }
+  .slot-id-ind .ind { width: 48px; }
   .slot-tag {
     font-size: 0.55rem; color: var(--muted); text-align: right; margin-top: 3px;
   }
   .slot-tag.ok { color: var(--green); }
+
+  /* 4x4 routing matrix */
+  .routing-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 0.75rem;
+  }
+  .routing-table th, .routing-table td {
+    padding: 8px 10px; text-align: center;
+    border: 1px solid var(--border);
+  }
+  .routing-table th {
+    font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--muted); background: var(--bg);
+  }
+  .routing-table th.ch-label { color: var(--accent); text-align: left; width: 70px; }
+  .routing-table th.slot-col { min-width: 70px; }
+  .routing-table td { background: var(--bg); }
+  .routing-table td.on { background: var(--slot-active); }
+  .routing-table input[type="checkbox"] {
+    width: 16px; height: 16px; accent-color: var(--green); cursor: pointer;
+  }
 
   /* Controls */
   .ctrl-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -116,7 +132,7 @@
 <body>
 
 <h1>FlexRay Signal Generator</h1>
-<p class="subtitle">4 channels &times; 4 slots &mdash; 200 Hz (5 ms), cycle auto-rolls 0&ndash;63</p>
+<p class="subtitle">4 slots &times; 4 channels &mdash; 200 Hz (5 ms), cycle auto-rolls 0&ndash;63</p>
 
 <!-- Connection -->
 <div class="card">
@@ -127,8 +143,17 @@
   </div>
 </div>
 
-<!-- Frame Grid -->
-<div class="card" id="frame-grid"></div>
+<!-- Slot Definitions -->
+<div class="card">
+  <div class="card-title">Frame Slots</div>
+  <div class="slots" id="slot-grid"></div>
+</div>
+
+<!-- Channel Routing Matrix -->
+<div class="card">
+  <div class="card-title">Channel Routing</div>
+  <table class="routing-table" id="routing-matrix"></table>
+</div>
 
 <!-- Controls -->
 <div class="card">
@@ -175,7 +200,6 @@ function parseHex(s) {
 function parsePayload(s) {
   s = s.trim();
   if (!s) return new Uint8Array(0);
-  // Accept continuous hex like "0xAABBCC" or "AABBCC"
   if (/^(0x)?[0-9a-fA-F]+$/.test(s)) {
     let hex = s.startsWith('0x')||s.startsWith('0X') ? s.slice(2) : s;
     if (hex.length & 1) hex = '0' + hex;
@@ -184,7 +208,6 @@ function parsePayload(s) {
       out[i] = parseInt(hex.substr(i*2, 2), 16);
     return out;
   }
-  // Space/comma separated bytes: "AA BB CC"
   const parts = s.split(/[\s,]+/).filter(x=>x.length);
   const out = new Uint8Array(parts.length);
   for (let i=0;i<parts.length;i++) {
@@ -195,51 +218,101 @@ function parsePayload(s) {
   return out;
 }
 
-const DEFAULTS = {
-  '0-0': { id: '1', data: 'A1 B2 C3 D4 E5 F6 07 18' },
-  '0-1': { id: '2', data: '1F 2E 3D 4C 5B 6A 79 88' },
-  '0-3': { id: '4', data: 'DE AD BE EF CA FE 01 02' },
-  '1-2': { id: '3', data: 'F0 E1 D2 C3 B4 A5 96 87' },
-};
+const SLOT_DEFAULTS = [
+  { id: '1', ind: '00', data: 'A1 B2 C3 D4 E5 F6 07 18' },
+  { id: '2', ind: '00', data: '1F 2E 3D 4C 5B 6A 79 88' },
+  { id: '3', ind: '00', data: 'F0 E1 D2 C3 B4 A5 96 87' },
+  { id: '4', ind: '00', data: 'DE AD BE EF CA FE 01 02' },
+];
 
-(function buildGrid(){
-  const grid = document.getElementById('frame-grid');
-  for (let ch=0; ch<NUM_CH; ch++) {
-    const row = document.createElement('div');
-    row.className = 'fr-row';
-    const label = document.createElement('div');
-    label.className = 'fr-label';
-    label.textContent = `FR${ch+1}`;
-    row.appendChild(label);
+// Default routing: which [ch][slot] checkboxes are checked
+const ROUTE_DEFAULTS = [
+  /* FR1 */ [true,  true,  false, true ],
+  /* FR2 */ [true,  false, true,  false],
+  /* FR3 */ [false, false, false, false],
+  /* FR4 */ [false, false, false, false],
+];
 
-    const slots = document.createElement('div');
-    slots.className = 'slots';
-    for (let s=0; s<NUM_SLOTS; s++) {
-      const def = DEFAULTS[`${ch}-${s}`] || {};
-      const cell = document.createElement('div');
-      cell.className = 'slot';
-      cell.id = `slot-${ch}-${s}`;
-      cell.innerHTML = `
-        <div class="slot-head">
-          <label>ID</label>
-          <input class="slot-id" id="id-${ch}-${s}" placeholder="0x___" value="${def.id||''}" oninput="onSlotEdit(${ch},${s})">
-          <label>Ind</label>
-          <input class="slot-ind" id="ind-${ch}-${s}" placeholder="00" value="00" oninput="onSlotEdit(${ch},${s})">
+// Build slot definition cards
+(function buildSlotGrid(){
+  const grid = document.getElementById('slot-grid');
+  for (let s=0; s<NUM_SLOTS; s++) {
+    const def = SLOT_DEFAULTS[s] || {};
+    const cell = document.createElement('div');
+    cell.className = 'slot';
+    cell.id = `slot-${s}`;
+    cell.innerHTML = `
+      <div class="slot-label">Slot ${s}</div>
+      <div class="slot-field slot-id-ind">
+        <div class="fid">
+          <label>Frame ID</label>
+          <input id="id-${s}" placeholder="0x___" value="${def.id||''}" oninput="onSlotEdit(${s})">
         </div>
-        <textarea id="data-${ch}-${s}" placeholder="payload hex bytes" rows="1" oninput="onSlotEdit(${ch},${s})">${def.data||''}</textarea>
-        <div class="slot-tag" id="tag-${ch}-${s}">&mdash;</div>`;
-      slots.appendChild(cell);
-      if (def.id) setTimeout(() => onSlotEdit(ch, s), 0);
-    }
-    row.appendChild(slots);
-    grid.appendChild(row);
+        <div class="ind">
+          <label>Ind</label>
+          <input id="ind-${s}" placeholder="00" value="${def.ind||'00'}" oninput="onSlotEdit(${s})">
+        </div>
+      </div>
+      <div class="slot-field">
+        <label>Payload (hex)</label>
+        <textarea id="data-${s}" placeholder="AA BB CC ..." rows="1" oninput="onSlotEdit(${s})">${def.data||''}</textarea>
+      </div>
+      <div class="slot-tag" id="tag-${s}">&mdash;</div>`;
+    grid.appendChild(cell);
+    if (def.id) setTimeout(() => onSlotEdit(s), 0);
   }
 })();
 
-function onSlotEdit(ch, s) {
-  const idVal = document.getElementById(`id-${ch}-${s}`).value.trim();
-  const cell = document.getElementById(`slot-${ch}-${s}`);
-  const tag = document.getElementById(`tag-${ch}-${s}`);
+// Build 4x4 routing matrix
+(function buildRoutingMatrix(){
+  const tbl = document.getElementById('routing-matrix');
+  // Header row
+  let hdr = '<tr><th></th>';
+  for (let s=0; s<NUM_SLOTS; s++)
+    hdr += `<th class="slot-col">Slot ${s}</th>`;
+  hdr += '</tr>';
+  tbl.innerHTML = hdr;
+  // Channel rows
+  for (let ch=0; ch<NUM_CH; ch++) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<th class="ch-label">FR${ch+1}</th>`;
+    for (let s=0; s<NUM_SLOTS; s++) {
+      const td = document.createElement('td');
+      td.id = `rt-${ch}-${s}`;
+      const checked = ROUTE_DEFAULTS[ch][s] ? 'checked' : '';
+      td.innerHTML = `<input type="checkbox" id="rc-${ch}-${s}" ${checked} onchange="onRouteChange(${ch},${s})">`;
+      if (ROUTE_DEFAULTS[ch][s]) td.classList.add('on');
+      tr.appendChild(td);
+    }
+    tbl.appendChild(tr);
+  }
+})();
+
+function onRouteChange(ch, s) {
+  const cb = document.getElementById(`rc-${ch}-${s}`);
+  document.getElementById(`rt-${ch}-${s}`).classList.toggle('on', cb.checked);
+  onSlotEdit(s);
+}
+
+function getChannelMask(s) {
+  let mask = 0;
+  for (let ch=0; ch<NUM_CH; ch++)
+    if (document.getElementById(`rc-${ch}-${s}`).checked) mask |= (1 << ch);
+  return mask;
+}
+
+function maskStr(m) {
+  const chs = [];
+  for (let ch=0; ch<NUM_CH; ch++) if (m & (1<<ch)) chs.push(`FR${ch+1}`);
+  return chs.join('+') || 'none';
+}
+
+function onSlotEdit(s) {
+  const idVal = document.getElementById(`id-${s}`).value.trim();
+  const cell = document.getElementById(`slot-${s}`);
+  const tag = document.getElementById(`tag-${s}`);
+  const mask = getChannelMask(s);
+
   if (!idVal) {
     cell.classList.remove('active');
     tag.textContent = '\u2014';
@@ -254,18 +327,24 @@ function onSlotEdit(ch, s) {
     return;
   }
   try {
-    const p = parsePayload(document.getElementById(`data-${ch}-${s}`).value);
+    const p = parsePayload(document.getElementById(`data-${s}`).value);
     if (p.length & 1) {
       tag.textContent = `${p.length}B (must be even)`;
       tag.className = 'slot-tag';
+      cell.classList.remove('active');
+    } else if (mask === 0) {
+      tag.textContent = `0x${fid.toString(16).padStart(3,'0')} \u2022 ${p.length}B \u2022 no channel`;
+      tag.className = 'slot-tag';
+      cell.classList.remove('active');
     } else {
-      tag.textContent = `0x${fid.toString(16).padStart(3,'0')} \u2022 ${p.length}B`;
+      tag.textContent = `0x${fid.toString(16).padStart(3,'0')} \u2022 ${p.length}B \u2022 ${maskStr(mask)}`;
       tag.className = 'slot-tag ok';
       cell.classList.add('active');
     }
   } catch(e) {
     tag.textContent = 'bad payload';
     tag.className = 'slot-tag';
+    cell.classList.remove('active');
   }
 }
 
@@ -322,18 +401,18 @@ async function sendCmd(pkt) {
 
 function collectActiveSlots() {
   const active = [];
-  for (let ch=0; ch<NUM_CH; ch++) {
-    for (let s=0; s<NUM_SLOTS; s++) {
-      const idStr = document.getElementById(`id-${ch}-${s}`).value.trim();
-      if (!idStr) continue;
-      const fid = parseHex(idStr);
-      if (isNaN(fid) || fid < 0 || fid > 2047) continue;
-      const indStr = document.getElementById(`ind-${ch}-${s}`).value.trim();
-      const ind = indStr ? (parseHex(indStr) & 0x1F) : 0;
-      const payload = parsePayload(document.getElementById(`data-${ch}-${s}`).value);
-      if (payload.length & 1) continue;
-      active.push({ch, s, fid, ind, payload});
-    }
+  for (let s=0; s<NUM_SLOTS; s++) {
+    const idStr = document.getElementById(`id-${s}`).value.trim();
+    if (!idStr) continue;
+    const fid = parseHex(idStr);
+    if (isNaN(fid) || fid < 0 || fid > 2047) continue;
+    const mask = getChannelMask(s);
+    if (mask === 0) continue;
+    const indStr = document.getElementById(`ind-${s}`).value.trim();
+    const ind = indStr ? (parseHex(indStr) & 0x1F) : 0;
+    const payload = parsePayload(document.getElementById(`data-${s}`).value);
+    if (payload.length & 1) continue;
+    active.push({s, mask, fid, ind, payload});
   }
   return active;
 }
@@ -346,25 +425,21 @@ async function startAll() {
       log('No valid slots configured', 'warn'); return;
     }
 
-    // Wake/sync device so first transferIn doesn't timeout after idle
     await sendCmd(new Uint8Array([CMD_PING]));
 
-    // Clear all slots first (retry once per slot on first-time failure)
-    for (let ch=0; ch<NUM_CH; ch++)
-      for (let s=0; s<NUM_SLOTS; s++) {
-        let r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
-        if (r !== RSP_OK) {
-          r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, ch+1, s]));
-          if (r !== RSP_OK) { log(`Clear ch${ch+1} slot${s} failed`, 'err'); return; }
-        }
+    for (let s=0; s<NUM_SLOTS; s++) {
+      let r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, s]));
+      if (r !== RSP_OK) {
+        r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, s]));
+        if (r !== RSP_OK) { log(`Clear slot${s} failed`, 'err'); return; }
       }
+    }
 
-    // Set active slots
     for (const sl of slots) {
       const pkt = new Uint8Array(8 + sl.payload.length);
       pkt[0] = CMD_SET_SLOT;
-      pkt[1] = sl.ch + 1;
-      pkt[2] = sl.s;
+      pkt[1] = sl.s;
+      pkt[2] = sl.mask;
       pkt[3] = sl.fid & 0xFF;
       pkt[4] = (sl.fid >> 8) & 0xFF;
       pkt[5] = sl.ind;
@@ -373,13 +448,12 @@ async function startAll() {
       pkt.set(sl.payload, 8);
       const r = await sendCmd(pkt);
       if (r !== RSP_OK) {
-        log(`Set FR${sl.ch+1} slot${sl.s} id=0x${sl.fid.toString(16).padStart(3,'0')} failed`, 'err');
+        log(`Set slot${sl.s} id=0x${sl.fid.toString(16).padStart(3,'0')} failed`, 'err');
         return;
       }
-      log(`Set FR${sl.ch+1}[${sl.s}] id=0x${sl.fid.toString(16).padStart(3,'0')} ${sl.payload.length}B`, 'info');
+      log(`Set slot${sl.s} id=0x${sl.fid.toString(16).padStart(3,'0')} ${sl.payload.length}B \u2192 ${maskStr(sl.mask)}`, 'info');
     }
 
-    // Start
     const r = await sendCmd(new Uint8Array([CMD_START]));
     if (r === RSP_OK) {
       setTxState(true);
@@ -402,7 +476,7 @@ async function rebootBootloader() {
   if (!device) return;
   try {
     await device.transferOut(EP_OUT, new Uint8Array([CMD_BOOTLOADER]));
-    log('Bootloader command sent — Pico will reboot; reconnect to flash UF2', 'warn');
+    log('Bootloader command sent \u2014 Pico will reboot; reconnect to flash UF2', 'warn');
     device = null;
     setConnected(false);
     setTxState(false);
@@ -416,8 +490,7 @@ navigator.usb.addEventListener('disconnect', e => {
   }
 });
 
-log('Fill in Frame IDs and payloads, then click Start', 'info');
-log('Cycle count auto-rolls 0\u201363 at 200 Hz on all active slots', 'info');
+log('Define frames in Slot 0\u20133, enable channels in the routing matrix, then Start', 'info');
 </script>
 </body>
 </html>

@@ -5,12 +5,11 @@ A standalone FlexRay signal generator built on Raspberry Pi Pico 2 (RP2350). Gen
 ## Features
 
 - **200 Hz continuous transmission** — frames repeat every 5 ms with auto-incrementing cycle count (0–63)
-- **4 independent FR channels** — each with its own PIO state machine and DMA
+- **4 FR channels with channel-mask routing** — each slot can output on any combination of channels simultaneously with perfect alignment
 - **Proper FlexRay framing** — TSS, FSS, BSS, 8-bit data, FES, with TX_EN driven via PIO side-set
 - **CRC calculation** — 11-bit header CRC and 24-bit frame CRC computed on-device
 - **WebUSB** — driverless browser pairing (Chrome), no host software required
-- **One-shot mode** — send a single frame for testing
-- **Live payload update** — change data on a running channel without restarting
+- **Live payload update** — change data on a running slot without restarting
 
 ## Pin Assignments
 
@@ -55,8 +54,8 @@ picotool load -f build/flexray_signal_gen.uf2
 Open `web/signal_gen.html` in Chrome (or serve it over HTTPS), or use https://generator.pico-flexray.xyz/ to get the web interface.
 
 1. Click **Connect** — Chrome will show the WebUSB pairing dialog
-2. Set frame ID, payload (hex), target channel
-3. Click **Start 200 Hz** for continuous transmission, or **Send Once** for a single frame
+2. Set frame ID, payload (hex), and select which channels to output on (FR1–FR4 checkboxes)
+3. Click **Start 200 Hz** for continuous transmission
 4. Click **Stop** to halt
 
 ## USB Protocol
@@ -65,11 +64,15 @@ VID `0xCAFE` / PID `0x4004`, vendor-class bulk endpoints.
 
 | CMD | Name | Payload |
 |-----|------|---------|
-| `0x01` | Send Once | `[ch][id:2LE][cycle][ind][len:2LE][data...]` |
 | `0x02` | Ping | — (returns `0x03`) |
-| `0x03` | Start 200 Hz | same as Send Once |
-| `0x04` | Stop | `[ch]` |
-| `0x05` | Update Payload | `[ch][len:2LE][data...]` |
+| `0x03` | Set Slot | `[slot 0-3][ch_mask][fid:2LE][ind][plen:2LE][data...]` |
+| `0x04` | Clear Slot | `[slot 0-3]` |
+| `0x05` | Start | — |
+| `0x06` | Stop | — |
+| `0x07` | Update Payload | `[slot 0-3][plen:2LE][data...]` |
+| `0x08` | Bootloader | — (reboots into UF2 mode) |
+
+`ch_mask` is a bitmask: bit 0 = FR1, bit 1 = FR2, bit 2 = FR3, bit 3 = FR4 (e.g. `0x0F` = all channels).
 
 Response: `[status]` where `0x00` = OK.
 

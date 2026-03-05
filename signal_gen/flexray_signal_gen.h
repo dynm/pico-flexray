@@ -16,16 +16,17 @@ typedef struct {
 
 bool signal_gen_init(PIO pio, const fr_channel_pins_t *channels, uint num_channels);
 
-// Configure a frame slot. The slot becomes active immediately.
-// If transmission is already running, the slot joins the next cycle.
-bool signal_gen_set_slot(uint channel, uint slot, uint16_t frame_id,
+// Configure a shared frame slot with a channel output mask.
+// channel_mask: bitmask of channels to output on (bit 0 = ch0, bit 1 = ch1, ...).
+// The frame is built once per cycle then DMA-kicked on all masked channels
+// simultaneously, ensuring perfect alignment across channels.
+bool signal_gen_set_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
                          uint8_t indicators, const uint8_t *payload,
                          uint16_t payload_len);
 
-void signal_gen_clear_slot(uint channel, uint slot);
+void signal_gen_clear_slot(uint slot);
 
-// Update payload for an active slot without clearing it.
-bool signal_gen_update_slot_payload(uint channel, uint slot,
+bool signal_gen_update_slot_payload(uint slot,
                                     const uint8_t *payload, uint16_t payload_len);
 
 // Global 200 Hz start / stop. Cycle count auto-rolls 0–63.

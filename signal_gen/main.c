@@ -60,11 +60,11 @@ static uint16_t led_calc_idle_breath_level(void)
 }
 
 // USB protocol
-// CMD_SET_SLOT:   [0x03][ch 1-4][slot 0-3][fid:2LE][ind][plen:2LE][payload...]
-// CMD_CLEAR_SLOT: [0x04][ch 1-4][slot 0-3]
+// CMD_SET_SLOT:   [0x03][slot 0-3][ch_mask][fid:2LE][ind][plen:2LE][payload...]
+// CMD_CLEAR_SLOT: [0x04][slot 0-3]
 // CMD_START:      [0x05]
 // CMD_STOP:       [0x06]
-// CMD_UPDATE:     [0x07][ch 1-4][slot 0-3][plen:2LE][payload...]
+// CMD_UPDATE:     [0x07][slot 0-3][plen:2LE][payload...]
 // CMD_PING:       [0x02]
 // CMD_BOOTLOADER: [0x08] — reboot into USB bootloader
 #define CMD_PING        0x02
@@ -147,11 +147,11 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         break;
 
     case CMD_SET_SLOT: {
-        // [cmd][ch][slot][fid:2LE][ind][plen:2LE][payload...]
+        // [cmd][slot][ch_mask][fid:2LE][ind][plen:2LE][payload...]
         if (len < 8) { send_response(RSP_ERR_INVALID); return; }
-        uint8_t ch_num = data[1];
-        uint8_t slot   = data[2];
-        if (ch_num < 1 || ch_num > 4 || slot > 3) {
+        uint8_t slot    = data[1];
+        uint8_t ch_mask = data[2];
+        if (slot > 3 || ch_mask == 0 || ch_mask > 0x0F) {
             send_response(RSP_ERR_INVALID); return;
         }
         uint16_t fid  = (uint16_t)(data[3] | ((uint16_t)data[4] << 8));
@@ -159,19 +159,18 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         uint16_t plen = (uint16_t)(data[6] | ((uint16_t)data[7] << 8));
         if (len < 8u + plen) { send_response(RSP_ERR_INVALID); return; }
         const uint8_t *payload = (plen > 0) ? &data[8] : NULL;
-        bool ok = signal_gen_set_slot(ch_num - 1, slot, fid, ind, payload, plen);
+        bool ok = signal_gen_set_slot(slot, ch_mask, fid, ind, payload, plen);
         send_response(ok ? RSP_OK : RSP_ERR_INVALID);
         break;
     }
 
     case CMD_CLEAR_SLOT: {
-        if (len < 3) { send_response(RSP_ERR_INVALID); return; }
-        uint8_t ch_num = data[1];
-        uint8_t slot   = data[2];
-        if (ch_num < 1 || ch_num > 4 || slot > 3) {
+        if (len < 2) { send_response(RSP_ERR_INVALID); return; }
+        uint8_t slot = data[1];
+        if (slot > 3) {
             send_response(RSP_ERR_INVALID); return;
         }
-        signal_gen_clear_slot(ch_num - 1, slot);
+        signal_gen_clear_slot(slot);
         send_response(RSP_OK);
         break;
     }
@@ -187,16 +186,15 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         break;
 
     case CMD_UPDATE: {
-        // [cmd][ch][slot][plen:2LE][payload...]
-        if (len < 5) { send_response(RSP_ERR_INVALID); return; }
-        uint8_t ch_num = data[1];
-        uint8_t slot   = data[2];
-        uint16_t plen  = (uint16_t)(data[3] | ((uint16_t)data[4] << 8));
-        if (ch_num < 1 || ch_num > 4 || slot > 3 || len < 5u + plen) {
+        // [cmd][slot][plen:2LE][payload...]
+        if (len < 4) { send_response(RSP_ERR_INVALID); return; }
+        uint8_t slot   = data[1];
+        uint16_t plen  = (uint16_t)(data[2] | ((uint16_t)data[3] << 8));
+        if (slot > 3 || len < 4u + plen) {
             send_response(RSP_ERR_INVALID); return;
         }
-        const uint8_t *payload = (plen > 0) ? &data[5] : NULL;
-        bool ok = signal_gen_update_slot_payload(ch_num - 1, slot, payload, plen);
+        const uint8_t *payload = (plen > 0) ? &data[4] : NULL;
+        bool ok = signal_gen_update_slot_payload(slot, payload, plen);
         send_response(ok ? RSP_OK : RSP_ERR_INVALID);
         break;
     }
