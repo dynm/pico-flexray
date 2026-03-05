@@ -106,8 +106,8 @@ static uint8_t const desc_url[] = {
     3 + 26,                    // bLength (3 header + URL chars)
     3,                         // bDescriptorType (WEBUSB URL)
     1,                         // bScheme (https://)
-    'e','x','a','m','p','l','e','.','c','o','m',
-    '/','w','e','b','u','s','b','/','f','l','e','x','r','a','y',
+    'g','e','n','e','r','a','t','o','r',
+    '.','p','i','c','o','-','f','l','e','x','r','a','y','.','x','y','z',
 };
 
 // ---------- String Descriptors ----------
