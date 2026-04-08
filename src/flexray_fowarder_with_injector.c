@@ -133,11 +133,11 @@ static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, 
     if (direction == INJECT_DIRECTION_TO_VEHICLE) {
     pio_sm_put(pio_forwarder_with_injector, sm_forwarder_with_injector_to_vehicle, injector_payload_length - 1);
     dma_channel_set_read_addr((uint)dma_inject_chan_to_vehicle, (const void *)full_frame, false);
-    dma_channel_set_trans_count((uint)dma_inject_chan_to_vehicle, injector_payload_length / 4, true);
+    dma_channel_set_trans_count((uint)dma_inject_chan_to_vehicle, (injector_payload_length + 3) / 4, true);
     } else if (direction == INJECT_DIRECTION_TO_ECU) {
     pio_sm_put(pio_forwarder_with_injector, sm_forwarder_with_injector_to_ecu, injector_payload_length - 1);
     dma_channel_set_read_addr((uint)dma_inject_chan_to_ecu, (const void *)full_frame, false);
-    dma_channel_set_trans_count((uint)dma_inject_chan_to_ecu, injector_payload_length / 4, true);
+    dma_channel_set_trans_count((uint)dma_inject_chan_to_ecu, (injector_payload_length + 3) / 4, true);
     } else {
         return;
     }
