@@ -6,7 +6,7 @@ A standalone FlexRay signal generator built on Raspberry Pi Pico 2 (RP2350). Gen
 
 - **200 Hz continuous transmission** — frames repeat every 5 ms with auto-incrementing cycle count (0–63)
 - **4 FR channels with channel-mask routing** — each slot can output on any combination of channels simultaneously with perfect alignment
-- **Proper FlexRay framing** — TSS, FSS, BSS, 8-bit data, FES, with TX_EN driven via PIO side-set
+- **Proper FlexRay framing** — TSS, FSS, BSS, 8-bit data, FES, with interleaved active-low TXEN driven only during rendered frame output
 - **CRC calculation** — 11-bit header CRC and 24-bit frame CRC computed on-device
 - **WebUSB** — driverless browser pairing (Chrome), no host software required
 - **Live payload update** — change data on a running slot without restarting

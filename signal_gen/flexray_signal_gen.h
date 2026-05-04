@@ -18,8 +18,9 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *channels, uint num_channe
 
 // Configure a shared frame slot with a channel output mask.
 // channel_mask: bitmask of channels to output on (bit 0 = ch0, bit 1 = ch1, ...).
-// The frame is built once per cycle then DMA-kicked on all masked channels
-// simultaneously, ensuring perfect alignment across channels.
+// Future cycles are rendered into per-channel RAM rings. Unrouted slots are
+// filled with recessive bits, and self-triggering DMA streams each ring into
+// synchronously started PIO SMs.
 bool signal_gen_set_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
                          uint8_t indicators, const uint8_t *payload,
                          uint16_t payload_len);

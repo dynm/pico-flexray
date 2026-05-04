@@ -1,60 +1,35 @@
 ; FlexRay Signal Generator PIO Program
-; Generates a complete FlexRay frame on the wire from DMA-fed data.
-; TX pin: set_pins and out_pins (TXD to transceiver)
-; Side-set pin: TX_EN (active low — side 0 enables transmitter)
+; Outputs a pre-rendered FlexRay wire-level bitstream from DMA-fed data.
+; Each wire bit is encoded as two FIFO bits: active-low TXEN then TXD.
+; TXD and TXEN pins can be any GPIOs; they do not need to be adjacent.
 ;
-; Wire format produced:
-;   IDLE(high) → TX_EN assert → TSS(low,2bit) → FSS(high,1bit)
-;   → [BSS0(high,1bit) BSS1(low,1bit) DATA(8bit)] per byte
-;   → FES(low,1bit) → CID(11bit recessive) → IDLE(high)
+; The C side expands future 5 ms cycles into per-channel RAM rings.
+; Disabled slots are encoded as continuous recessive bits (1), while active
+; slots include TSS/FSS/BSS/data/FES/CID bits in the stream itself.
 ;
 ; Data fed via FIFO/DMA:
-;   Word 0: byte_count - 1 (pushed via pio_sm_put, not DMA)
-;   Word 1..N: frame bytes packed big-endian (DMA with bswap)
+;   Packed TXEN/TXD bit pairs, MSB first (DMA with bswap). RP2350 DMA self-triggers
+;   over a read ring so the PIO sees a continuous stream.
 
 .program flexray_signal_gen
-.side_set 1
 .fifo tx
 .mov_status txfifo < 1
 .out 1 left auto 32
 
-.wrap_target
 idle:
-    set pins, 1        side 1     ; recessive, TX disabled
-    pull block         side 1     ; wait for byte count word
-    out y, 32          side 1     ; y = byte_count - 1
+    set pins, 1                 ; TXEN disabled
+    pull block                  ; wait for first data word
 
-    ; assert TX_EN and let transceiver settle (~100ns at 100MHz = 10 cycles)
-    set pins, 1 [9]    side 0
-
-    ; TSS: 2 bit-times dominant
-    set pins, 0 [9]    side 0
-    set pins, 0 [9]    side 0
-
-    ; FSS: 1 bit-time recessive
-    set pins, 1 [9]    side 0
-
-byte_loop:
-    set pins, 1 [9]    side 0     ; BSS0 high  (10 cycles = 1 bit)
-    set pins, 0 [1]    side 0     ; BSS1 low start (2 cycles)
-    set pins, 0 [6]    side 0     ; BSS1 low cont  (7 cycles)
-    set x, 6           side 0     ; 1 cycle  → BSS1 total = 10
-
-out_bits:
-    out pins, 1 [8]    side 0     ; shift 1 data bit, 9 cycles
-    jmp x-- out_bits   side 0     ; 1 cycle → 10/bit, 7 iterations
-
-    out pins, 1 [8]    side 0     ; 8th data bit
-    jmp y--, byte_loop side 0     ; next byte (or fall through)
-
-    ; FES: 1 bit-time dominant
-    set pins, 0 [9]    side 0
-
-    ; CID: Channel Idle Delimiter — 11 bit-times recessive, TX_EN released
-    set x, 10          side 1     ; x = 10 → 11 iterations (0..10)
-cid_wait:
-    set pins, 1 [9]    side 1     ; 1 bit-time recessive (10 cycles)
-    jmp x-- cid_wait   side 1
+.wrap_target
+    out y, 1                    ; TXEN bit (1 = disabled, 0 = enabled)
+    jmp !y txen_low
+    set pins, 1                 ; TXEN high
+    jmp txd_out
+txen_low:
+    set pins, 0                 ; TXEN low
+    nop
+txd_out:
+    out pins, 1                 ; TXD bit
 .wrap
 
 % c-sdk {
@@ -71,21 +46,17 @@ static inline void flexray_signal_gen_program_init(PIO pio, uint sm, uint offset
 
     pio_sm_config c = flexray_signal_gen_program_get_default_config(offset);
 
-    sm_config_set_set_pins(&c, tx_pin, 1);
+    sm_config_set_set_pins(&c, txen_pin, 1);
     sm_config_set_out_pins(&c, tx_pin, 1);
-    sm_config_set_sideset_pins(&c, txen_pin);
 
-    // 10 Mbit/s FlexRay, 10× oversample → 100 MHz PIO clock
-    float div = (float)clock_get_hz(clk_sys) / (10.0f * 1000000.0f * 10.0f);
+    // 10 Mbit/s FlexRay, 5 PIO instructions per wire bit.
+    float div = (float)clock_get_hz(clk_sys) / (10.0f * 1000000.0f * 5.0f);
     sm_config_set_clkdiv(&c, div);
 
     pio_sm_init(pio, sm, offset, &c);
 
-    // start with TX high (recessive) and TX_EN high (disabled)
     pio_sm_set_pins_with_mask(pio, sm,
         (1u << tx_pin) | (1u << txen_pin),
         (1u << tx_pin) | (1u << txen_pin));
-
-    pio_sm_set_enabled(pio, sm, true);
 }
 %}
