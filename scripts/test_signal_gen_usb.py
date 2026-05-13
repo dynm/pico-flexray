@@ -217,12 +217,21 @@ def main() -> int:
                     late = int.from_bytes(diag[5:9], "little")
                     completed = int.from_bytes(diag[9:13], "little")
                     handled = int.from_bytes(diag[13:17], "little")
+                    render_text = ""
+                    if len(diag) >= 25:
+                        last_render = int.from_bytes(diag[17:21], "little")
+                        max_render = int.from_bytes(diag[21:25], "little")
+                        render_text = (
+                            f" last_render_us={last_render}"
+                            f" max_render_us={max_render}"
+                        )
                     print(
                         "diag: "
                         f"txstall_count={stalls} "
                         f"late_buffer_count={late} "
                         f"completed_cycles={completed} "
                         f"handled_cycles={handled}"
+                        f"{render_text}"
                     )
                 else:
                     print(f"diag: txstall_count={stalls}")

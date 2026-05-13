@@ -114,7 +114,7 @@ static void pin_test_task(void)
 // CMD_CLEAR_ALL:  [0x0b]
 // CMD_PIN_TEST:   [0x0c][mode 0/1] — drive configured TX pins at ~10 Hz for probing
 // CMD_PIO_TEST:   [0x0d][mode 0/1] — drive ch0 through PIO FIFO for probing
-// CMD_DIAG:       [0x0e] — returns [OK][txstall:4LE][late:4LE][completed:4LE][handled:4LE]
+// CMD_DIAG:       [0x0e] — returns [OK][txstall:4LE][late:4LE][completed:4LE][handled:4LE][last_render_us:4LE][max_render_us:4LE]
 #define CMD_PING        0x02
 #define CMD_SET_SLOT    0x03
 #define CMD_CLEAR_SLOT  0x04
@@ -353,14 +353,16 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
     case CMD_DIAG: {
         signal_gen_diag_t diag;
         signal_gen_diag(&diag);
-        uint8_t buf[17] = { RSP_OK };
-        uint32_t values[4] = {
+        uint8_t buf[25] = { RSP_OK };
+        uint32_t values[6] = {
             diag.txstall_count,
             diag.late_buffer_count,
             diag.completed_cycles,
             diag.handled_cycles,
+            diag.last_render_us,
+            diag.max_render_us,
         };
-        for (uint i = 0; i < 4; i++) {
+        for (uint i = 0; i < 6; i++) {
             buf[1u + i * 4u] = (uint8_t)values[i];
             buf[2u + i * 4u] = (uint8_t)(values[i] >> 8);
             buf[3u + i * 4u] = (uint8_t)(values[i] >> 16);

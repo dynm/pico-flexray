@@ -19,6 +19,8 @@ typedef struct {
     uint32_t late_buffer_count;
     uint32_t completed_cycles;
     uint32_t handled_cycles;
+    uint32_t last_render_us;
+    uint32_t max_render_us;
 } signal_gen_diag_t;
 
 bool signal_gen_init(PIO pio, const fr_channel_pins_t *channels, uint num_channels);
