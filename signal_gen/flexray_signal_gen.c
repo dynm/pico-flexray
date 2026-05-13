@@ -2,6 +2,7 @@
 #include "flexray_frame.h"
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
+#include "hardware/gpio.h"
 #include "hardware/structs/pio.h"
 #include "hardware/regs/dma.h"
 #include "pico/time.h"
@@ -51,7 +52,7 @@ static uint32_t slot_duration_us;
 #define RING_SIZE_BITS 15u
 #define RING_BYTES (1u << RING_SIZE_BITS)
 #define RING_WORDS (RING_BYTES / 4u)
-#define TX_FIFO_PREFILL_WORDS 8u
+#define TX_FIFO_PREFILL_WORDS 4u
 #define TX_FIFO_PREFILL_BYTES (TX_FIFO_PREFILL_WORDS * 4u)
 #define RING_PREFILL_CYCLES 2u
 #define RING_LOW_WATER_CYCLES 1u
@@ -109,6 +110,11 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *pins, uint num_channels)
         channel_config_set_write_increment(&ch->dma_cfg, false);
         channel_config_set_ring(&ch->dma_cfg, false, RING_SIZE_BITS);
         channel_config_set_dreq(&ch->dma_cfg, pio_get_dreq(pio, ch->sm, true));
+#if PICO_RP2040
+        // RP2040 cannot self-trigger; we keep chain_to = self so completion is
+        // harmless, and use a huge transfer count in signal_gen_start().
+        channel_config_set_chain_to(&ch->dma_cfg, (uint)ch->dma_chan);
+#endif
         dma_channel_set_config((uint)ch->dma_chan, &ch->dma_cfg, false);
         dma_channel_set_write_addr((uint)ch->dma_chan,
                                    (void *)&pio->txf[ch->sm], false);
@@ -195,6 +201,15 @@ static uint32_t calc_slot_duration(void)
             max_payload = slots[s].payload_len;
 
     return calc_payload_slot_duration(max_payload);
+}
+
+static uint32_t active_slot_extent(void)
+{
+    uint32_t extent = 0;
+    for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++)
+        if (slots[s].active)
+            extent = s + 1u;
+    return extent;
 }
 
 static inline void bw_append_bit(bit_writer_t *bw, bool bit)
@@ -327,29 +342,176 @@ static uint64_t dma_read_abs(void)
 static void prefill_sm_fifo(channel_state_t *ch, const uint8_t *stream)
 {
     for (uint i = 0; i < TX_FIFO_PREFILL_WORDS; i++) {
+        if (pio_sm_is_tx_fifo_full(gen_pio, ch->sm))
+            break;
         uint32_t word;
         memcpy(&word, stream + (i * sizeof(word)), sizeof(word));
         word = __builtin_bswap32(word);
-        pio_sm_put_blocking(gen_pio, ch->sm, word);
+        pio_sm_put(gen_pio, ch->sm, word);
     }
+}
+
+static bool is_valid_gpio_pair(uint tx_pin, uint txen_pin)
+{
+    if (tx_pin == txen_pin) return false;
+    if (tx_pin >= NUM_BANK0_GPIOS || txen_pin >= NUM_BANK0_GPIOS) return false;
+    return true;
+}
+
+static bool pins_collide_with_other_channel(uint channel, uint tx_pin, uint txen_pin)
+{
+    for (uint c = 0; c < num_hw_channels; c++) {
+        if (c == channel || !chans[c].hw_ready) continue;
+        if (tx_pin == chans[c].tx_pin || tx_pin == chans[c].txen_pin ||
+            txen_pin == chans[c].tx_pin || txen_pin == chans[c].txen_pin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void apply_channel_pins(uint channel, uint tx_pin, uint txen_pin)
+{
+    channel_state_t *ch = &chans[channel];
+    if (ch->tx_pin == tx_pin && ch->txen_pin == txen_pin) return;
+
+    stop_channel_dma(ch);
+    park_channel(ch);
+    pio_sm_clear_fifos(gen_pio, ch->sm);
+
+    uint old_tx = ch->tx_pin;
+    uint old_txen = ch->txen_pin;
+
+    gpio_init(old_tx);
+    gpio_init(old_txen);
+    gpio_pull_up(old_tx);
+    gpio_pull_up(old_txen);
+
+    ch->tx_pin = tx_pin;
+    ch->txen_pin = txen_pin;
+    flexray_signal_gen_program_init(gen_pio, ch->sm, gen_program_offset,
+                                    tx_pin, txen_pin);
+    dma_channel_set_write_addr((uint)ch->dma_chan,
+                               (void *)&gen_pio->txf[ch->sm], false);
+
+    printf("PINS ch%u: tx=%u txen=%u\n", channel, tx_pin, txen_pin);
+}
+
+bool signal_gen_set_channel_pins(uint channel, uint tx_pin, uint txen_pin)
+{
+    if (channel >= num_hw_channels) return false;
+    if (running) return false;
+    if (!is_valid_gpio_pair(tx_pin, txen_pin)) return false;
+    if (pins_collide_with_other_channel(channel, tx_pin, txen_pin)) return false;
+    if (!chans[channel].hw_ready) return false;
+
+    apply_channel_pins(channel, tx_pin, txen_pin);
+    return true;
+}
+
+bool signal_gen_set_channel_pin_map(const fr_channel_pins_t *pins, uint num_channels)
+{
+    if (pins == NULL || num_channels != num_hw_channels) return false;
+    if (running) return false;
+
+    for (uint c = 0; c < num_channels; c++) {
+        if (!chans[c].hw_ready) return false;
+        if (!is_valid_gpio_pair(pins[c].tx_pin, pins[c].txen_pin)) return false;
+        for (uint other = c + 1u; other < num_channels; other++) {
+            if (pins[c].tx_pin == pins[other].tx_pin ||
+                pins[c].tx_pin == pins[other].txen_pin ||
+                pins[c].txen_pin == pins[other].tx_pin ||
+                pins[c].txen_pin == pins[other].txen_pin) {
+                return false;
+            }
+        }
+    }
+
+    for (uint c = 0; c < num_channels; c++) {
+        channel_state_t *ch = &chans[c];
+        if (ch->tx_pin == pins[c].tx_pin && ch->txen_pin == pins[c].txen_pin)
+            continue;
+        stop_channel_dma(ch);
+        park_channel(ch);
+        pio_sm_clear_fifos(gen_pio, ch->sm);
+    }
+
+    for (uint c = 0; c < num_channels; c++) {
+        bool old_tx_reused = false;
+        bool old_txen_reused = false;
+        for (uint target = 0; target < num_channels; target++) {
+            old_tx_reused |= chans[c].tx_pin == pins[target].tx_pin ||
+                             chans[c].tx_pin == pins[target].txen_pin;
+            old_txen_reused |= chans[c].txen_pin == pins[target].tx_pin ||
+                               chans[c].txen_pin == pins[target].txen_pin;
+        }
+        if (!old_tx_reused) {
+            gpio_init(chans[c].tx_pin);
+            gpio_pull_up(chans[c].tx_pin);
+        }
+        if (!old_txen_reused) {
+            gpio_init(chans[c].txen_pin);
+            gpio_pull_up(chans[c].txen_pin);
+        }
+    }
+
+    for (uint c = 0; c < num_channels; c++) {
+        channel_state_t *ch = &chans[c];
+        ch->tx_pin = pins[c].tx_pin;
+        ch->txen_pin = pins[c].txen_pin;
+        flexray_signal_gen_program_init(gen_pio, ch->sm, gen_program_offset,
+                                        ch->tx_pin, ch->txen_pin);
+        dma_channel_set_write_addr((uint)ch->dma_chan,
+                                   (void *)&gen_pio->txf[ch->sm], false);
+        printf("PINS ch%u: tx=%u txen=%u\n", c, ch->tx_pin, ch->txen_pin);
+    }
+
+    return true;
+}
+
+bool signal_gen_pio_test(uint channel, bool enabled)
+{
+    if (channel >= num_hw_channels || !chans[channel].hw_ready) return false;
+    channel_state_t *ch = &chans[channel];
+
+    signal_gen_stop();
+    stop_channel_dma(ch);
+    park_channel(ch);
+    pio_sm_clear_fifos(gen_pio, ch->sm);
+    flexray_signal_gen_program_init(gen_pio, ch->sm, gen_program_offset,
+                                    ch->tx_pin, ch->txen_pin);
+    if (!enabled) return true;
+
+    pio_sm_restart(gen_pio, ch->sm);
+    pio_sm_exec(gen_pio, ch->sm, pio_encode_jmp(gen_program_offset));
+
+    // TXEN/TXD bit pairs, MSB first. This creates an obvious alternating
+    // pattern on TX while TXEN remains active low.
+    for (uint i = 0; i < 8; i++) {
+        pio_sm_put(gen_pio, ch->sm, 0x33333333u);
+    }
+    pio_sm_set_enabled(gen_pio, ch->sm, true);
+    return true;
 }
 
 static uint8_t maintain_ring_fill(void)
 {
     uint64_t read_abs = dma_read_abs();
-    uint64_t ahead = ring_write_abs - read_abs;
+    int64_t ahead = (int64_t)(ring_write_abs - read_abs);
+    if (ahead < 0) ahead = 0;
     uint8_t tx_mask = 0;
 
-    if (ahead >= (uint64_t)RING_LOW_WATER_CYCLES * CYCLE_BYTES)
+    if ((uint64_t)ahead >= (uint64_t)RING_LOW_WATER_CYCLES * CYCLE_BYTES)
         return 0;
 
-    while (ahead < (uint64_t)RING_PREFILL_CYCLES * CYCLE_BYTES) {
-        if (ahead >
+    while ((uint64_t)ahead < (uint64_t)RING_PREFILL_CYCLES * CYCLE_BYTES) {
+        if ((uint64_t)ahead >
             (uint64_t)(RING_BYTES - CYCLE_BYTES)) {
             break;
         }
         tx_mask |= render_next_cycle_to_ring();
-        ahead = ring_write_abs - read_abs;
+        ahead = (int64_t)(ring_write_abs - read_abs);
+        if (ahead < 0) ahead = 0;
     }
     return tx_mask;
 }
@@ -388,6 +550,15 @@ void signal_gen_clear_slot(uint slot)
     printf("CLEAR slot%u\n", slot);
 }
 
+void signal_gen_clear_all_slots(void)
+{
+    for (uint slot = 0; slot < SIGNAL_GEN_MAX_SLOTS; slot++) {
+        slots[slot].active = false;
+        slots[slot].channel_mask = 0;
+    }
+    printf("CLEAR all slots\n");
+}
+
 bool signal_gen_update_slot_payload(uint slot,
                                     const uint8_t *payload, uint16_t payload_len)
 {
@@ -404,16 +575,36 @@ bool signal_gen_update_slot_payload(uint slot,
     return true;
 }
 
-void signal_gen_start(void)
+bool signal_gen_can_start(void)
 {
+    uint32_t slot_extent = active_slot_extent();
+    uint32_t next_slot_duration_us = calc_slot_duration();
+    if (slot_extent == 0 ||
+        (slot_extent * next_slot_duration_us) > FLEXRAY_CYCLE_PERIOD_US) {
+        printf("START rejected: slot_extent=%lu gdStaticSlot=%lu us\n",
+               (unsigned long)slot_extent,
+               (unsigned long)next_slot_duration_us);
+        return false;
+    }
+    return true;
+}
+
+bool signal_gen_start(void)
+{
+    uint32_t slot_extent = active_slot_extent();
+    uint32_t next_slot_duration_us = calc_slot_duration();
+    if (!signal_gen_can_start()) return false;
+
     for (uint c = 0; c < num_hw_channels; c++) {
         if (!chans[c].hw_ready) continue;
         stop_channel_dma(&chans[c]);
         park_channel(&chans[c]);
+        flexray_signal_gen_program_init(gen_pio, chans[c].sm, gen_program_offset,
+                                        chans[c].tx_pin, chans[c].txen_pin);
         pio_sm_clear_fifos(gen_pio, chans[c].sm);
     }
 
-    slot_duration_us = calc_slot_duration();
+    slot_duration_us = next_slot_duration_us;
     cycle_count = 0;
     tx_count = 0;
     ring_write_abs = 0;
@@ -437,15 +628,23 @@ void signal_gen_start(void)
         pio_sm_restart(gen_pio, ch->sm);
         pio_sm_exec(gen_pio, ch->sm, pio_encode_jmp(gen_program_offset));
         gen_pio->fdebug = 1u << (PIO_FDEBUG_TXSTALL_LSB + ch->sm);
-        prefill_sm_fifo(ch, stream_rings[c]);
 
         dma_channel_set_config(dma_chan, &ch->dma_cfg, false);
         dma_channel_set_write_addr(dma_chan, (void *)&gen_pio->txf[ch->sm], false);
+#if PICO_RP2040
+        // RP2040 has no self-trigger. Use a huge count so the DMA never stops;
+        // ring wrap keeps the address within the buffer. Start from ring base
+        // because RP2040 wraps to the aligned base, not the initial offset.
+        dma_channel_set_read_addr(dma_chan, stream_rings[c], false);
+        dma_channel_set_transfer_count(dma_chan, 0xFFFFFFFFu, false);
+#else
+        prefill_sm_fifo(ch, stream_rings[c]);
         dma_channel_set_read_addr(dma_chan, stream_rings[c] + TX_FIFO_PREFILL_BYTES, false);
         dma_channel_set_transfer_count(
             dma_chan,
             dma_encode_transfer_count_with_self_trigger(RING_WORDS),
             false);
+#endif
 
         dma_mask |= 1u << dma_chan;
         sm_mask |= 1u << ch->sm;
@@ -457,7 +656,9 @@ void signal_gen_start(void)
         pio_enable_sm_mask_in_sync(gen_pio, sm_mask);
 
     running = true;
-    printf("START @200Hz  gdStaticSlot=%lu us\n", (unsigned long)slot_duration_us);
+    printf("START @200Hz  slot_extent=%lu gdStaticSlot=%lu us\n",
+           (unsigned long)slot_extent, (unsigned long)slot_duration_us);
+    return true;
 }
 
 void signal_gen_stop(void)

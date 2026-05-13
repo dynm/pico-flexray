@@ -28,6 +28,12 @@
     font-size: 0.7rem; text-transform: uppercase;
     letter-spacing: 0.1em; color: var(--muted); margin-bottom: 10px;
   }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 10px;
+  }
+  .card-head .card-title { margin-bottom: 0; }
+  .slot-actions { display: flex; gap: 8px; }
   button {
     font-family: inherit; font-size: 0.8rem; font-weight: 600;
     padding: 8px 16px; border: none; border-radius: 5px;
@@ -43,6 +49,11 @@
   .btn-stop:hover:not(:disabled) { background: #fca5a5; }
   .btn-bootloader { background: var(--orange); color: var(--bg); }
   .btn-bootloader:hover:not(:disabled) { background: #fdba74; }
+  .btn-small {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 5px 9px; font-size: 0.7rem;
+  }
+  .btn-small:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .conn-row { display: flex; align-items: center; gap: 12px; }
   .status-dot {
     display: inline-block; width: 8px; height: 8px;
@@ -78,12 +89,38 @@
   .slot-id-ind { display: flex; gap: 6px; }
   .slot-id-ind .fid { flex: 1; }
   .slot-id-ind .ind { width: 48px; }
+  .slot-count-control {
+    display: grid; grid-template-columns: 70px 48px; gap: 6px;
+  }
+  .slot-count-control input,
+  .bulk-fill input {
+    height: 28px; padding: 3px 6px; font-size: 0.7rem;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font-family: inherit; outline: none;
+  }
+  .slot-count-control input:focus,
+  .bulk-fill input:focus { border-color: var(--accent); }
+  .slot-count-control button,
+  .bulk-fill button {
+    height: 28px; padding: 0; border-radius: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); font-size: 0.7rem;
+  }
+  .slot-count-control button:hover:not(:disabled),
+  .bulk-fill button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .bulk-fill {
+    display: grid; grid-template-columns: 92px 54px; gap: 6px;
+  }
+  .slot-count-control {
+    display: grid; grid-template-columns: 70px 48px; gap: 6px;
+  }
   .slot-tag {
     font-size: 0.55rem; color: var(--muted); text-align: right; margin-top: 3px;
   }
   .slot-tag.ok { color: var(--green); }
 
-  /* 4x4 routing matrix */
+  /* Channel routing matrix */
+  .routing-wrap { overflow-x: auto; }
   .routing-table {
     width: 100%; border-collapse: collapse;
     font-size: 0.75rem;
@@ -96,13 +133,37 @@
     font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.05em; color: var(--muted); background: var(--bg);
   }
-  .routing-table th.ch-label { color: var(--accent); text-align: left; width: 70px; }
+  .routing-table th.ch-label { color: var(--accent); text-align: left; width: 92px; }
   .routing-table th.slot-col { min-width: 70px; }
   .routing-table td { background: var(--bg); }
   .routing-table td.on { background: var(--slot-active); }
   .routing-table input[type="checkbox"] {
     width: 16px; height: 16px; accent-color: var(--green); cursor: pointer;
   }
+  .route-row-toggle {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .pin-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .pin-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px;
+  }
+  .pin-card h3 {
+    font-size: 0.65rem; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 7px;
+  }
+  .pin-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .pin-field label {
+    font-size: 0.6rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.03em; display: block; margin-bottom: 2px;
+  }
+  .pin-field input {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+    color: var(--text); padding: 4px 6px;
+    font-family: inherit; font-size: 0.75rem;
+    outline: none; width: 100%;
+  }
+  .pin-field input:focus { border-color: var(--accent); }
 
   /* Controls */
   .ctrl-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -126,13 +187,14 @@
 
   @media (max-width: 700px) {
     .slots { grid-template-columns: repeat(2, 1fr); }
+    .pin-grid { grid-template-columns: repeat(2, 1fr); }
   }
 </style>
 </head>
 <body>
 
 <h1>FlexRay Signal Generator</h1>
-<p class="subtitle">4 slots &times; 4 channels &mdash; 200 Hz (5 ms), cycle auto-rolls 0&ndash;63</p>
+<p class="subtitle">Configurable slots &times; 4 channels &mdash; 200 Hz (5 ms), cycle auto-rolls 0&ndash;63</p>
 
 <!-- Connection -->
 <div class="card">
@@ -145,14 +207,36 @@
 
 <!-- Slot Definitions -->
 <div class="card">
-  <div class="card-title">Frame Slots</div>
+  <div class="card-head">
+    <div class="card-title">Frame Slots</div>
+    <div class="slot-actions">
+      <div class="slot-count-control">
+        <input id="slot-count-input" inputmode="numeric" pattern="[0-9]*" value="4">
+        <button onclick="applySlotCount()">Slots</button>
+      </div>
+      <div class="bulk-fill">
+        <input id="bulk-fill-len" inputmode="numeric" pattern="[0-9]*" placeholder="payload len">
+        <button onclick="fillAllPayloads()">Fill</button>
+      </div>
+      <button class="btn-small" id="btn-remove-slot" onclick="removeSlot()">Remove slot</button>
+      <button class="btn-small" id="btn-add-slot" onclick="addSlot()">Add slot</button>
+    </div>
+  </div>
   <div class="slots" id="slot-grid"></div>
+</div>
+
+<!-- Channel Pin Configuration -->
+<div class="card">
+  <div class="card-title">Channel Pins</div>
+  <div class="pin-grid" id="pin-grid"></div>
 </div>
 
 <!-- Channel Routing Matrix -->
 <div class="card">
   <div class="card-title">Channel Routing</div>
-  <table class="routing-table" id="routing-matrix"></table>
+  <div class="routing-wrap">
+    <table class="routing-table" id="routing-matrix"></table>
+  </div>
 </div>
 
 <!-- Controls -->
@@ -174,11 +258,13 @@
 const VID = 0xCAFE, EP_OUT = 3, EP_IN = 1;
 const CMD_PING = 0x02, CMD_SET_SLOT = 0x03, CMD_CLEAR_SLOT = 0x04;
 const CMD_START = 0x05, CMD_STOP = 0x06, CMD_UPDATE = 0x07;
-const CMD_BOOTLOADER = 0x08;
+const CMD_BOOTLOADER = 0x08, CMD_TARGET = 0x09, CMD_SET_PINS = 0x0A, CMD_CLEAR_ALL = 0x0B;
 const RSP_OK = 0x00, RSP_PONG = 0x03;
-const NUM_CH = 4, NUM_SLOTS = 4;
+const NUM_CH = 4, INITIAL_SLOT_COUNT = 4, MAX_SLOT_COUNT = 64;
 
-let device = null, txRunning = false;
+let device = null, txRunning = false, busy = false;
+let slotCount = INITIAL_SLOT_COUNT;
+let protocolReady = false;
 
 function log(msg, cls='') {
   const el = document.getElementById('log');
@@ -232,12 +318,52 @@ const ROUTE_DEFAULTS = [
   /* FR3 */ [false, false, false, false],
   /* FR4 */ [false, false, false, false],
 ];
+let slotState = SLOT_DEFAULTS.map(s => ({...s}));
+let routeState = ROUTE_DEFAULTS.map(row => row.slice());
 
-// Build slot definition cards
-(function buildSlotGrid(){
+const PIN_DEFAULTS = [
+  { tx: 28, txen: 27 },
+  { tx: 4,  txen: 5  },
+  { tx: 10, txen: 9  },
+  { tx: 16, txen: 22 },
+];
+const RESERVED_PINS = new Set([2, 3, 17, 18, 19, 20]);
+
+function routeDefault(ch, s) {
+  return Boolean(routeState[ch] && routeState[ch][s]);
+}
+
+function snapshotSlots() {
+  for (let s=0; s<slotCount; s++) {
+    slotState[s] = {
+      id: document.getElementById(`id-${s}`)?.value || '',
+      ind: document.getElementById(`ind-${s}`)?.value || '00',
+      data: document.getElementById(`data-${s}`)?.value || '',
+    };
+  }
+}
+
+function snapshotRoutes() {
+  for (let ch=0; ch<NUM_CH; ch++) {
+    if (!routeState[ch]) routeState[ch] = [];
+    for (let s=0; s<slotCount; s++)
+      routeState[ch][s] = Boolean(document.getElementById(`rc-${ch}-${s}`)?.checked);
+  }
+}
+
+function updateSlotButtons() {
+  document.getElementById('btn-remove-slot').disabled = slotCount <= 1 || txRunning || busy;
+  document.getElementById('btn-add-slot').disabled = slotCount >= MAX_SLOT_COUNT || txRunning || busy;
+  document.getElementById('bulk-fill-len').disabled = txRunning || busy;
+  document.getElementById('slot-count-input').disabled = txRunning || busy;
+  document.getElementById('slot-count-input').value = String(slotCount);
+}
+
+function buildSlotGrid(){
   const grid = document.getElementById('slot-grid');
-  for (let s=0; s<NUM_SLOTS; s++) {
-    const def = SLOT_DEFAULTS[s] || {};
+  grid.innerHTML = '';
+  for (let s=0; s<slotCount; s++) {
+    const def = slotState[s] || {};
     const cell = document.createElement('div');
     cell.className = 'slot';
     cell.id = `slot-${s}`;
@@ -261,37 +387,128 @@ const ROUTE_DEFAULTS = [
     grid.appendChild(cell);
     if (def.id) setTimeout(() => onSlotEdit(s), 0);
   }
+  updateSlotButtons();
+}
+
+function addSlot() {
+  if (txRunning || slotCount >= MAX_SLOT_COUNT) return;
+  snapshotSlots();
+  snapshotRoutes();
+  slotCount++;
+  if (!slotState[slotCount - 1])
+    slotState[slotCount - 1] = { id: String(slotCount), ind: '00', data: '' };
+  buildSlotGrid();
+  buildRoutingMatrix();
+}
+
+function removeSlot() {
+  if (txRunning || slotCount <= 1) return;
+  snapshotSlots();
+  snapshotRoutes();
+  slotCount--;
+  buildSlotGrid();
+  buildRoutingMatrix();
+}
+
+function applySlotCount() {
+  if (txRunning || busy) return;
+  const next = Number(document.getElementById('slot-count-input').value);
+  if (!Number.isInteger(next) || next < 1 || next > MAX_SLOT_COUNT) {
+    log(`Slot count must be 1-${MAX_SLOT_COUNT}`, 'warn');
+    document.getElementById('slot-count-input').value = String(slotCount);
+    return;
+  }
+  if (next === slotCount) return;
+  snapshotSlots();
+  snapshotRoutes();
+  const oldCount = slotCount;
+  slotCount = next;
+  for (let s=oldCount; s<slotCount; s++) {
+    if (!slotState[s])
+      slotState[s] = { id: String(s + 1), ind: '00', data: '' };
+  }
+  buildSlotGrid();
+  buildRoutingMatrix();
+}
+
+buildSlotGrid();
+
+// Build channel pin controls
+(function buildPinGrid(){
+  const grid = document.getElementById('pin-grid');
+  for (let ch=0; ch<NUM_CH; ch++) {
+    const def = PIN_DEFAULTS[ch];
+    const cell = document.createElement('div');
+    cell.className = 'pin-card';
+    cell.innerHTML = `
+      <h3>FR${ch+1}</h3>
+      <div class="pin-row">
+        <div class="pin-field">
+          <label>TX</label>
+          <input id="pin-tx-${ch}" type="number" min="0" max="29" step="1" value="${def.tx}">
+        </div>
+        <div class="pin-field">
+          <label>TX_EN</label>
+          <input id="pin-txen-${ch}" type="number" min="0" max="29" step="1" value="${def.txen}">
+        </div>
+      </div>`;
+    grid.appendChild(cell);
+  }
 })();
 
-// Build 4x4 routing matrix
-(function buildRoutingMatrix(){
+function buildRoutingMatrix(){
   const tbl = document.getElementById('routing-matrix');
   // Header row
   let hdr = '<tr><th></th>';
-  for (let s=0; s<NUM_SLOTS; s++)
+  for (let s=0; s<slotCount; s++)
     hdr += `<th class="slot-col">Slot ${s}</th>`;
   hdr += '</tr>';
   tbl.innerHTML = hdr;
   // Channel rows
   for (let ch=0; ch<NUM_CH; ch++) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<th class="ch-label">FR${ch+1}</th>`;
-    for (let s=0; s<NUM_SLOTS; s++) {
+    const rowChecked = routeState[ch]?.slice(0, slotCount).every(Boolean) ? 'checked' : '';
+    tr.innerHTML = `<th class="ch-label"><label class="route-row-toggle"><input type="checkbox" id="rr-${ch}" ${rowChecked} onchange="onRouteRowChange(${ch})">FR${ch+1}</label></th>`;
+    for (let s=0; s<slotCount; s++) {
       const td = document.createElement('td');
       td.id = `rt-${ch}-${s}`;
-      const checked = ROUTE_DEFAULTS[ch][s] ? 'checked' : '';
+      const checked = routeDefault(ch, s) ? 'checked' : '';
       td.innerHTML = `<input type="checkbox" id="rc-${ch}-${s}" ${checked} onchange="onRouteChange(${ch},${s})">`;
-      if (ROUTE_DEFAULTS[ch][s]) td.classList.add('on');
+      if (routeDefault(ch, s)) td.classList.add('on');
       tr.appendChild(td);
     }
     tbl.appendChild(tr);
   }
-})();
+}
+
+buildRoutingMatrix();
 
 function onRouteChange(ch, s) {
   const cb = document.getElementById(`rc-${ch}-${s}`);
   document.getElementById(`rt-${ch}-${s}`).classList.toggle('on', cb.checked);
+  if (!routeState[ch]) routeState[ch] = [];
+  routeState[ch][s] = cb.checked;
+  syncRouteRow(ch);
   onSlotEdit(s);
+}
+
+function onRouteRowChange(ch) {
+  const checked = document.getElementById(`rr-${ch}`).checked;
+  if (!routeState[ch]) routeState[ch] = [];
+  for (let s=0; s<slotCount; s++) {
+    routeState[ch][s] = checked;
+    const cb = document.getElementById(`rc-${ch}-${s}`);
+    const td = document.getElementById(`rt-${ch}-${s}`);
+    if (cb) cb.checked = checked;
+    if (td) td.classList.toggle('on', checked);
+    onSlotEdit(s);
+  }
+}
+
+function syncRouteRow(ch) {
+  const row = document.getElementById(`rr-${ch}`);
+  if (!row) return;
+  row.checked = routeState[ch]?.slice(0, slotCount).every(Boolean) || false;
 }
 
 function getChannelMask(s) {
@@ -307,8 +524,73 @@ function maskStr(m) {
   return chs.join('+') || 'none';
 }
 
+function formatPayload(bytes) {
+  return bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+}
+
+function fillAllPayloads() {
+  const len = Number(document.getElementById('bulk-fill-len').value);
+  if (!Number.isInteger(len) || len < 0 || len > 254 || (len & 1)) {
+    log('Fill length must be an even number from 0 to 254', 'warn');
+    return;
+  }
+
+  let filled = 0;
+  for (let s=0; s<slotCount; s++) {
+    const fid = parseHex(document.getElementById(`id-${s}`).value.trim());
+    if (isNaN(fid) || fid < 0 || fid > 2047) continue;
+    const byte = fid & 0xFF;
+    document.getElementById(`data-${s}`).value = formatPayload(Array(len).fill(byte));
+    onSlotEdit(s);
+    filled++;
+  }
+  log(`Filled ${filled} slot payload(s) with ${len}B from each Frame ID`, filled ? 'ok' : 'warn');
+}
+
+function getPinConfig() {
+  const pins = [];
+  const used = new Set();
+  for (let ch=0; ch<NUM_CH; ch++) {
+    const tx = Number(document.getElementById(`pin-tx-${ch}`).value);
+    const txen = Number(document.getElementById(`pin-txen-${ch}`).value);
+    if (!Number.isInteger(tx) || !Number.isInteger(txen) ||
+        tx < 0 || tx > 29 || txen < 0 || txen > 29) {
+      throw new Error(`FR${ch+1} pins must be GPIO 0-29`);
+    }
+    if (tx === txen) throw new Error(`FR${ch+1} TX and TX_EN must be different`);
+    if (RESERVED_PINS.has(tx) || RESERVED_PINS.has(txen))
+      throw new Error(`FR${ch+1} uses a reserved control GPIO`);
+    for (const p of [tx, txen]) {
+      if (used.has(p)) throw new Error(`GPIO ${p} is assigned more than once`);
+      used.add(p);
+    }
+    pins.push({ch, tx, txen});
+  }
+  return pins;
+}
+
+async function sendPinConfig() {
+  const pins = getPinConfig();
+  const pkt = new Uint8Array(1 + pins.length * 2);
+  pkt[0] = CMD_SET_PINS;
+  for (const p of pins) {
+    pkt[1 + p.ch * 2] = p.tx;
+    pkt[2 + p.ch * 2] = p.txen;
+  }
+  const r = await sendCmd(pkt);
+  if (r !== RSP_OK) {
+    throw new Error(`Pin config rejected (${pins.map(p => `FR${p.ch+1}=TX${p.tx}/EN${p.txen}`).join(' ')}). Flash the latest firmware if this device is running an older build.`);
+  }
+  log(`Pins set: ${pins.map(p => `FR${p.ch+1}=TX${p.tx}/EN${p.txen}`).join(' ')}`, 'info');
+}
+
 function onSlotEdit(s) {
   const idVal = document.getElementById(`id-${s}`).value.trim();
+  slotState[s] = {
+    id: document.getElementById(`id-${s}`).value,
+    ind: document.getElementById(`ind-${s}`).value,
+    data: document.getElementById(`data-${s}`).value,
+  };
   const cell = document.getElementById(`slot-${s}`);
   const tag = document.getElementById(`tag-${s}`);
   const mask = getChannelMask(s);
@@ -355,9 +637,19 @@ function setConnected(ok) {
   const btn = document.getElementById('btn-connect');
   btn.textContent = ok ? 'Disconnect' : 'Connect';
   btn.classList.toggle('connected', ok);
-  document.getElementById('btn-start').disabled = !ok;
-  document.getElementById('btn-stop').disabled = !ok;
-  document.getElementById('btn-bootloader').disabled = !ok;
+  document.getElementById('btn-start').disabled = !ok || busy;
+  document.getElementById('btn-stop').disabled = !ok || busy;
+  document.getElementById('btn-bootloader').disabled = !ok || busy;
+}
+
+function setBusy(on) {
+  busy = on;
+  const connected = Boolean(device);
+  document.getElementById('btn-connect').disabled = on;
+  document.getElementById('btn-start').disabled = !connected || on;
+  document.getElementById('btn-stop').disabled = !connected || on;
+  document.getElementById('btn-bootloader').disabled = !connected || on;
+  updateSlotButtons();
 }
 
 function setTxState(on) {
@@ -365,9 +657,11 @@ function setTxState(on) {
   const b = document.getElementById('tx-badge');
   b.textContent = on ? 'Transmitting @ 200 Hz' : 'Idle';
   b.classList.toggle('active', on);
+  updateSlotButtons();
 }
 
 async function toggleConnect() {
+  if (busy) return;
   if (device) { await disconnect(); return; }
   try {
     device = await navigator.usb.requestDevice({filters:[{vendorId:VID}]});
@@ -376,10 +670,7 @@ async function toggleConnect() {
     await device.claimInterface(0);
     setConnected(true);
     log(`Connected to ${device.productName}`, 'ok');
-    await device.transferOut(EP_OUT, new Uint8Array([CMD_PING]));
-    const r = await device.transferIn(EP_IN, 64);
-    if (r.data && r.data.getUint8(0) === RSP_PONG)
-      log('Ping OK', 'ok');
+    protocolReady = await checkProtocol();
   } catch(e) {
     log(`Connect failed: ${e.message}`, 'err');
     device = null; setConnected(false);
@@ -389,19 +680,69 @@ async function toggleConnect() {
 async function disconnect() {
   if (!device) return;
   try { await device.close(); } catch(_) {}
+  protocolReady = false;
   device = null; setConnected(false); setTxState(false);
   log('Disconnected', 'info');
 }
 
 async function sendCmd(pkt) {
-  await device.transferOut(EP_OUT, pkt);
-  const r = await device.transferIn(EP_IN, 64);
+  if (!device) throw new Error('Device is not connected');
+  await withTimeout(device.transferOut(EP_OUT, pkt), 1500, 'USB write timed out');
+  const r = await withTimeout(device.transferIn(EP_IN, 64), 1500, 'USB response timed out');
   return r.data ? r.data.getUint8(0) : 0xFF;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function clearAllSlots() {
+  const r = await sendCmd(new Uint8Array([CMD_CLEAR_ALL]));
+  if (r === RSP_OK) return;
+  throw new Error('Clear all slots rejected; flash the latest firmware and reconnect');
+}
+
+async function checkProtocol() {
+  let detail = '';
+  try {
+    await device.transferOut(EP_OUT, new Uint8Array([CMD_TARGET]));
+    const rsp = await withTimeout(device.transferIn(EP_IN, 64), 1500, 'target query timed out');
+    if (!rsp.data || rsp.data.byteLength < 1) {
+      detail = 'empty response';
+      throw new Error(detail);
+    }
+    const status = rsp.data.getUint8(0);
+    const ok = status === RSP_OK;
+    const code = ok && rsp.data.byteLength > 1 ? rsp.data.getUint8(1) : 0;
+    if (ok && (code === 0x20 || code === 0x50)) {
+      const proto = rsp.data.byteLength > 2 ? rsp.data.getUint8(2) : 1;
+      const major = rsp.data.byteLength > 3 ? rsp.data.getUint8(3) : 0;
+      const minor = rsp.data.byteLength > 4 ? rsp.data.getUint8(4) : 0;
+      const patch = rsp.data.byteLength > 5 ? rsp.data.getUint8(5) : 0;
+      log(`Firmware target: ${code === 0x20 ? 'RP2040' : 'RP2350'} FW ${major}.${minor}.${patch} protocol ${proto}`, 'info');
+      if (proto < 2) {
+        log('Firmware protocol is old; flash the latest UF2 before using pin config or dynamic slots', 'warn');
+        return false;
+      }
+      return true;
+    }
+    detail = `status=0x${status.toString(16).padStart(2,'0')} bytes=${rsp.data.byteLength}`;
+    if (rsp.data.byteLength > 1) detail += ` target=0x${rsp.data.getUint8(1).toString(16).padStart(2,'0')}`;
+    if (rsp.data.byteLength > 2) detail += ` proto=${rsp.data.getUint8(2)}`;
+  } catch (e) {
+    detail = e.message;
+  }
+  log(`Firmware protocol is old or unreadable (${detail}); flash the latest RP2040/RP2350 UF2, reconnect USB, then connect again`, 'warn');
+  return false;
 }
 
 function collectActiveSlots() {
   const active = [];
-  for (let s=0; s<NUM_SLOTS; s++) {
+  for (let s=0; s<slotCount; s++) {
     const idStr = document.getElementById(`id-${s}`).value.trim();
     if (!idStr) continue;
     const fid = parseHex(idStr);
@@ -418,22 +759,24 @@ function collectActiveSlots() {
 }
 
 async function startAll() {
-  if (!device) return;
+  if (!device || busy) return;
+  setBusy(true);
   try {
     const slots = collectActiveSlots();
     if (slots.length === 0) {
       log('No valid slots configured', 'warn'); return;
     }
 
-    await sendCmd(new Uint8Array([CMD_PING]));
-
-    for (let s=0; s<NUM_SLOTS; s++) {
-      let r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, s]));
-      if (r !== RSP_OK) {
-        r = await sendCmd(new Uint8Array([CMD_CLEAR_SLOT, s]));
-        if (r !== RSP_OK) { log(`Clear slot${s} failed`, 'err'); return; }
-      }
+    if (!protocolReady) {
+      protocolReady = await checkProtocol();
+      if (!protocolReady) return;
     }
+    if (txRunning) {
+      await sendCmd(new Uint8Array([CMD_STOP]));
+      setTxState(false);
+    }
+    await sendPinConfig();
+    await clearAllSlots();
 
     for (const sl of slots) {
       const pkt = new Uint8Array(8 + sl.payload.length);
@@ -462,6 +805,7 @@ async function startAll() {
       log('Start failed', 'err');
     }
   } catch(e) { log(`Error: ${e.message}`, 'err'); }
+  finally { setBusy(false); }
 }
 
 async function stopAll() {
@@ -490,7 +834,7 @@ navigator.usb.addEventListener('disconnect', e => {
   }
 });
 
-log('Define frames in Slot 0\u20133, enable channels in the routing matrix, then Start', 'info');
+log('Define frames, set pins and routing, then Start', 'info');
 </script>
 </body>
 </html>

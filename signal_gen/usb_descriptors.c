@@ -9,6 +9,14 @@
 #define SIGNAL_GEN_VID 0xCAFE
 #define SIGNAL_GEN_PID 0x4004
 
+#if PICO_RP2040
+#define SIGNAL_GEN_PRODUCT "FlexRay Signal Generator RP2040"
+#elif PICO_RP2350
+#define SIGNAL_GEN_PRODUCT "FlexRay Signal Generator RP2350"
+#else
+#define SIGNAL_GEN_PRODUCT "FlexRay Signal Generator"
+#endif
+
 #define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
 
 enum {
@@ -122,7 +130,7 @@ enum {
 char const *string_desc_arr[] = {
     (char[]){0x09, 0x04},       // 0: English
     "PicoFlexRay",              // 1: Manufacturer
-    "FlexRay Signal Generator", // 2: Product
+    SIGNAL_GEN_PRODUCT,         // 2: Product
     NULL,                       // 3: Serial (filled at runtime)
     "FlexRay SignalGen"         // 4: Interface
 };
