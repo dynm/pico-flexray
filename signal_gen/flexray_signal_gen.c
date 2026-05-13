@@ -339,6 +339,7 @@ static uint64_t dma_read_abs(void)
     return read_wraps + offset;
 }
 
+#if !PICO_RP2040
 static void prefill_sm_fifo(channel_state_t *ch, const uint8_t *stream)
 {
     for (uint i = 0; i < TX_FIFO_PREFILL_WORDS; i++) {
@@ -350,6 +351,7 @@ static void prefill_sm_fifo(channel_state_t *ch, const uint8_t *stream)
         pio_sm_put(gen_pio, ch->sm, word);
     }
 }
+#endif
 
 static bool is_valid_gpio_pair(uint tx_pin, uint txen_pin)
 {
