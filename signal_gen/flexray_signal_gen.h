@@ -14,16 +14,25 @@ typedef struct {
     uint txen_pin;
 } fr_channel_pins_t;
 
+typedef struct {
+    uint32_t txstall_count;
+    uint32_t late_buffer_count;
+    uint32_t completed_cycles;
+    uint32_t handled_cycles;
+} signal_gen_diag_t;
+
 bool signal_gen_init(PIO pio, const fr_channel_pins_t *channels, uint num_channels);
 bool signal_gen_set_channel_pins(uint channel, uint tx_pin, uint txen_pin);
 bool signal_gen_set_channel_pin_map(const fr_channel_pins_t *pins, uint num_channels);
 bool signal_gen_pio_test(uint channel, bool enabled);
+uint32_t signal_gen_stall_count(void);
+void signal_gen_diag(signal_gen_diag_t *diag);
 
 // Configure a shared frame slot with a channel output mask.
 // channel_mask: bitmask of channels to output on (bit 0 = ch0, bit 1 = ch1, ...).
-// Future cycles are rendered into per-channel RAM rings. Unrouted slots are
-// filled with recessive bits, and self-triggering DMA streams each ring into
-// synchronously started PIO SMs.
+// Future cycles are rendered into per-channel ping/pong buffers. Unrouted
+// slots are filled with recessive bits, and a chained control DMA rearms the
+// data DMA at each 5 ms cycle boundary.
 bool signal_gen_set_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
                          uint8_t indicators, const uint8_t *payload,
                          uint16_t payload_len);

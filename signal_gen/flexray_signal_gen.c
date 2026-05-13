@@ -3,6 +3,7 @@
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
+#include "hardware/irq.h"
 #include "hardware/structs/pio.h"
 #include "hardware/regs/dma.h"
 #include "pico/time.h"
@@ -27,7 +28,10 @@ typedef struct {
     uint tx_pin;
     uint txen_pin;
     int dma_chan;
+    int ctrl_dma_chan;
     dma_channel_config dma_cfg;
+    dma_channel_config ctrl_dma_cfg;
+    volatile uint32_t next_read_addr;
 } channel_state_t;
 
 static PIO gen_pio;
@@ -49,24 +53,21 @@ static uint32_t slot_duration_us;
 #define MAX_SLOT_DURATION_US \
     (((MAX_FRAME_PAYLOAD_BYTES + 8u + 3u + 10u + 4u) / 5u) * 5u)
 #define MAX_CYCLE_BUF_BYTES (((CYCLE_STREAM_BITS + 31u) / 32u) * 4u)
-#define RING_SIZE_BITS 15u
-#define RING_BYTES (1u << RING_SIZE_BITS)
-#define RING_WORDS (RING_BYTES / 4u)
-#define TX_FIFO_PREFILL_WORDS 4u
-#define TX_FIFO_PREFILL_BYTES (TX_FIFO_PREFILL_WORDS * 4u)
-#define RING_PREFILL_CYCLES 2u
-#define RING_LOW_WATER_CYCLES 1u
+#define TX_FIFO_FILL_TIMEOUT_US 1000u
+#define CYCLE_WORDS (CYCLE_BYTES / 4u)
+#define CYCLE_BUFFER_COUNT 2u
 
 static uint8_t cycle_bufs[SIGNAL_GEN_MAX_CHANNELS][MAX_CYCLE_BUF_BYTES]
     __attribute__((aligned(4)));
-static uint8_t stream_rings[SIGNAL_GEN_MAX_CHANNELS][RING_BYTES]
-    __attribute__((aligned(RING_BYTES)));
+static uint8_t stream_cycle_bufs[SIGNAL_GEN_MAX_CHANNELS][CYCLE_BUFFER_COUNT][MAX_CYCLE_BUF_BYTES]
+    __attribute__((aligned(4)));
 
-static uint64_t ring_write_abs;
-static uint32_t last_read_offset;
-static uint64_t read_wraps;
-static uint8_t render_cycle_count;
+static volatile uint32_t dma_completed_cycles;
+static uint32_t handled_completed_cycles;
 static uint8_t current_tx_mask;
+static uint current_armed_buffer_index;
+static uint32_t txstall_count;
+static uint32_t late_buffer_count;
 
 typedef struct {
     uint8_t *buf;
@@ -83,11 +84,12 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *pins, uint num_channels)
     cycle_count = 0;
     tx_count = 0;
     slot_duration_us = 0;
-    ring_write_abs = 0;
-    last_read_offset = 0;
-    read_wraps = 0;
-    render_cycle_count = 0;
+    dma_completed_cycles = 0;
+    handled_completed_cycles = 0;
     current_tx_mask = 0;
+    current_armed_buffer_index = 0;
+    txstall_count = 0;
+    late_buffer_count = 0;
     memset(slots, 0, sizeof(slots));
 
     gen_program_offset = pio_add_program(pio, &flexray_signal_gen_program);
@@ -108,19 +110,28 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *pins, uint num_channels)
         channel_config_set_bswap(&ch->dma_cfg, true);
         channel_config_set_read_increment(&ch->dma_cfg, true);
         channel_config_set_write_increment(&ch->dma_cfg, false);
-        channel_config_set_ring(&ch->dma_cfg, false, RING_SIZE_BITS);
         channel_config_set_dreq(&ch->dma_cfg, pio_get_dreq(pio, ch->sm, true));
-#if PICO_RP2040
-        // RP2040 cannot self-trigger; we keep chain_to = self so completion is
-        // harmless, and use a huge transfer count in signal_gen_start().
-        channel_config_set_chain_to(&ch->dma_cfg, (uint)ch->dma_chan);
-#endif
+        channel_config_set_high_priority(&ch->dma_cfg, true);
+
+        ch->ctrl_dma_chan = (int)dma_claim_unused_channel(true);
+        ch->ctrl_dma_cfg = dma_channel_get_default_config((uint)ch->ctrl_dma_chan);
+        channel_config_set_transfer_data_size(&ch->ctrl_dma_cfg, DMA_SIZE_32);
+        channel_config_set_read_increment(&ch->ctrl_dma_cfg, false);
+        channel_config_set_write_increment(&ch->ctrl_dma_cfg, false);
+        channel_config_set_dreq(&ch->ctrl_dma_cfg, DREQ_FORCE);
+        channel_config_set_high_priority(&ch->ctrl_dma_cfg, true);
+
+        channel_config_set_chain_to(&ch->dma_cfg, (uint)ch->ctrl_dma_chan);
+        channel_config_set_ring(&ch->ctrl_dma_cfg, false, 2);
+
         dma_channel_set_config((uint)ch->dma_chan, &ch->dma_cfg, false);
-        dma_channel_set_write_addr((uint)ch->dma_chan,
-                                   (void *)&pio->txf[ch->sm], false);
+        dma_channel_set_write_addr((uint)ch->dma_chan, (void *)&pio->txf[ch->sm], false);
+        dma_channel_configure((uint)ch->ctrl_dma_chan, &ch->ctrl_dma_cfg,
+                              &dma_channel_hw_addr((uint)ch->dma_chan)->al3_read_addr_trig,
+                              &ch->next_read_addr, 1, false);
         ch->hw_ready = true;
-        printf("Signal gen ch%u: sm=%u dma=%d tx=%u txen=%u\n",
-               i, ch->sm, ch->dma_chan, pins[i].tx_pin, pins[i].txen_pin);
+        printf("Signal gen ch%u: sm=%u dma=%d ctrl_dma=%d tx=%u txen=%u\n",
+               i, ch->sm, ch->dma_chan, ch->ctrl_dma_chan, pins[i].tx_pin, pins[i].txen_pin);
     }
     return true;
 }
@@ -141,12 +152,16 @@ static uint16_t build_header(uint8_t *buf, uint16_t frame_id, uint8_t indicators
 static void stop_dma_chan(int dma_chan)
 {
     uint chan = (uint)dma_chan;
+    dma_irqn_set_channel_enabled(0, chan, false);
+    dma_irqn_acknowledge_channel(0, chan);
     dma_channel_hw_addr(chan)->ctrl_trig &= ~DMA_CH0_CTRL_TRIG_EN_BITS;
     dma_channel_abort(chan);
+    dma_irqn_acknowledge_channel(0, chan);
 }
 
 static void stop_channel_dma(channel_state_t *ch)
 {
+    stop_dma_chan(ch->ctrl_dma_chan);
     stop_dma_chan(ch->dma_chan);
 }
 
@@ -299,59 +314,42 @@ static uint8_t render_cycle_buffers(uint8_t cyc)
     return tx_mask;
 }
 
-static void ring_copy(uint8_t *ring, uint32_t offset, const uint8_t *src,
-                      uint32_t len)
+static uint8_t render_cycle_to_buffer(uint8_t cyc, uint buffer_index)
 {
-    uint32_t first = RING_BYTES - offset;
-    if (first > len) first = len;
-    memcpy(&ring[offset], src, first);
-    if (first < len)
-        memcpy(ring, src + first, len - first);
-}
-
-static uint8_t render_next_cycle_to_ring(void)
-{
-    uint8_t tx_mask = render_cycle_buffers(render_cycle_count);
-    uint32_t offset = (uint32_t)ring_write_abs & (RING_BYTES - 1u);
-
+    uint8_t tx_mask = render_cycle_buffers(cyc);
     for (uint c = 0; c < num_hw_channels; c++)
-        ring_copy(stream_rings[c], offset, cycle_bufs[c], CYCLE_BYTES);
-
-    ring_write_abs += CYCLE_BYTES;
-    render_cycle_count = (render_cycle_count + 1u) & 0x3Fu;
+        memcpy(stream_cycle_bufs[c][buffer_index], cycle_bufs[c], CYCLE_BYTES);
     return tx_mask;
 }
 
-static uint64_t dma_read_abs(void)
+static void set_next_dma_buffer(uint buffer_index)
 {
-    if (num_hw_channels == 0 || !chans[0].hw_ready) return 0;
-
-    channel_state_t *ch = &chans[0];
-    uintptr_t base = (uintptr_t)stream_rings[0];
-    uintptr_t addr = dma_channel_hw_addr((uint)ch->dma_chan)->read_addr;
-    uint32_t offset = (uint32_t)(addr - base) & (RING_BYTES - 1u);
-
-    if (offset < last_read_offset &&
-        (last_read_offset - offset) > (RING_BYTES / 2u)) {
-        read_wraps += RING_BYTES;
-    }
-    last_read_offset = offset;
-    return read_wraps + offset;
-}
-
-#if !PICO_RP2040
-static void prefill_sm_fifo(channel_state_t *ch, const uint8_t *stream)
-{
-    for (uint i = 0; i < TX_FIFO_PREFILL_WORDS; i++) {
-        if (pio_sm_is_tx_fifo_full(gen_pio, ch->sm))
-            break;
-        uint32_t word;
-        memcpy(&word, stream + (i * sizeof(word)), sizeof(word));
-        word = __builtin_bswap32(word);
-        pio_sm_put(gen_pio, ch->sm, word);
+    current_armed_buffer_index = buffer_index & 1u;
+    for (uint c = 0; c < num_hw_channels; c++) {
+        if (!chans[c].hw_ready) continue;
+        chans[c].next_read_addr = (uint32_t)(uintptr_t)stream_cycle_bufs[c][buffer_index];
     }
 }
-#endif
+
+static void dma_cycle_irq_handler(void)
+{
+    if (num_hw_channels == 0 || !chans[0].hw_ready) return;
+    uint dma_chan = (uint)chans[0].dma_chan;
+    if (dma_irqn_get_channel_status(0, dma_chan)) {
+        dma_irqn_acknowledge_channel(0, dma_chan);
+        dma_completed_cycles++;
+    }
+}
+
+static void ensure_dma_cycle_irq(void)
+{
+    static bool installed;
+    if (installed) return;
+    irq_set_exclusive_handler(DMA_IRQ_NUM(0), dma_cycle_irq_handler);
+    irq_set_priority(DMA_IRQ_NUM(0), 0);
+    irq_set_enabled(DMA_IRQ_NUM(0), true);
+    installed = true;
+}
 
 static bool is_valid_gpio_pair(uint tx_pin, uint txen_pin)
 {
@@ -496,25 +494,42 @@ bool signal_gen_pio_test(uint channel, bool enabled)
     return true;
 }
 
-static uint8_t maintain_ring_fill(void)
+uint32_t signal_gen_stall_count(void)
 {
-    uint64_t read_abs = dma_read_abs();
-    int64_t ahead = (int64_t)(ring_write_abs - read_abs);
-    if (ahead < 0) ahead = 0;
-    uint8_t tx_mask = 0;
+    return txstall_count;
+}
 
-    if ((uint64_t)ahead >= (uint64_t)RING_LOW_WATER_CYCLES * CYCLE_BYTES)
+void signal_gen_diag(signal_gen_diag_t *diag)
+{
+    if (diag == NULL) return;
+    diag->txstall_count = txstall_count;
+    diag->late_buffer_count = late_buffer_count;
+    diag->completed_cycles = dma_completed_cycles;
+    diag->handled_cycles = handled_completed_cycles;
+}
+
+static uint8_t maintain_cycle_buffers(void)
+{
+    uint8_t tx_mask = 0;
+    uint32_t completed = dma_completed_cycles;
+    uint32_t lag = completed - handled_completed_cycles;
+
+    if (lag == 0)
         return 0;
 
-    while ((uint64_t)ahead < (uint64_t)RING_PREFILL_CYCLES * CYCLE_BYTES) {
-        if ((uint64_t)ahead >
-            (uint64_t)(RING_BYTES - CYCLE_BYTES)) {
-            break;
-        }
-        tx_mask |= render_next_cycle_to_ring();
-        ahead = (int64_t)(ring_write_abs - read_abs);
-        if (ahead < 0) ahead = 0;
-    }
+    if (lag > 1u)
+        late_buffer_count += lag - 1u;
+
+    // Normal case: the just-completed cycle freed handled_completed_cycles&1.
+    // Late case: DMA may have replayed the last armed buffer, so write only
+    // the other buffer and skip stale cycle numbers instead of catching up.
+    uint buffer_index = (lag == 1u)
+                        ? (handled_completed_cycles & 1u)
+                        : (current_armed_buffer_index ^ 1u);
+    uint8_t render_cycle = (uint8_t)((completed + 1u) & 0x3Fu);
+    tx_mask |= render_cycle_to_buffer(render_cycle, buffer_index);
+    set_next_dma_buffer(buffer_index);
+    handled_completed_cycles = completed;
     return tx_mask;
 }
 
@@ -609,15 +624,18 @@ bool signal_gen_start(void)
     slot_duration_us = next_slot_duration_us;
     cycle_count = 0;
     tx_count = 0;
-    ring_write_abs = 0;
-    last_read_offset = 0;
-    read_wraps = 0;
-    render_cycle_count = 0;
+    dma_completed_cycles = 0;
+    handled_completed_cycles = 0;
     current_tx_mask = 0;
-    memset(stream_rings, 0xFF, sizeof(stream_rings));
+    current_armed_buffer_index = 0;
+    txstall_count = 0;
+    late_buffer_count = 0;
+    memset(stream_cycle_bufs, 0xFF, sizeof(stream_cycle_bufs));
 
-    for (uint i = 0; i < RING_PREFILL_CYCLES; i++)
-        current_tx_mask |= render_next_cycle_to_ring();
+    current_tx_mask |= render_cycle_to_buffer(0, 0);
+    current_tx_mask |= render_cycle_to_buffer(1, 1);
+    set_next_dma_buffer(1);
+    ensure_dma_cycle_irq();
 
     uint32_t dma_mask = 0;
     uint32_t sm_mask = 0;
@@ -625,6 +643,7 @@ bool signal_gen_start(void)
         if (!chans[c].hw_ready) continue;
         channel_state_t *ch = &chans[c];
         uint dma_chan = (uint)ch->dma_chan;
+        uint ctrl_dma_chan = (uint)ch->ctrl_dma_chan;
 
         pio_sm_clear_fifos(gen_pio, ch->sm);
         pio_sm_restart(gen_pio, ch->sm);
@@ -633,20 +652,16 @@ bool signal_gen_start(void)
 
         dma_channel_set_config(dma_chan, &ch->dma_cfg, false);
         dma_channel_set_write_addr(dma_chan, (void *)&gen_pio->txf[ch->sm], false);
-#if PICO_RP2040
-        // RP2040 has no self-trigger. Use a huge count so the DMA never stops;
-        // ring wrap keeps the address within the buffer. Start from ring base
-        // because RP2040 wraps to the aligned base, not the initial offset.
-        dma_channel_set_read_addr(dma_chan, stream_rings[c], false);
-        dma_channel_set_transfer_count(dma_chan, 0xFFFFFFFFu, false);
-#else
-        prefill_sm_fifo(ch, stream_rings[c]);
-        dma_channel_set_read_addr(dma_chan, stream_rings[c] + TX_FIFO_PREFILL_BYTES, false);
-        dma_channel_set_transfer_count(
-            dma_chan,
-            dma_encode_transfer_count_with_self_trigger(RING_WORDS),
-            false);
-#endif
+        dma_channel_set_read_addr(dma_chan, stream_cycle_bufs[c][0], false);
+        dma_channel_set_transfer_count(dma_chan, CYCLE_WORDS, false);
+
+        dma_channel_configure(ctrl_dma_chan, &ch->ctrl_dma_cfg,
+                              &dma_channel_hw_addr(dma_chan)->al3_read_addr_trig,
+                              &ch->next_read_addr, 1, false);
+        if (c == 0) {
+            dma_irqn_acknowledge_channel(0, dma_chan);
+            dma_irqn_set_channel_enabled(0, dma_chan, true);
+        }
 
         dma_mask |= 1u << dma_chan;
         sm_mask |= 1u << ch->sm;
@@ -654,6 +669,15 @@ bool signal_gen_start(void)
 
     if (dma_mask)
         dma_start_channel_mask(dma_mask);
+    absolute_time_t fifo_deadline = make_timeout_time_us(TX_FIFO_FILL_TIMEOUT_US);
+    bool fifo_ready;
+    do {
+        fifo_ready = true;
+        for (uint c = 0; c < num_hw_channels; c++) {
+            if (chans[c].hw_ready)
+                fifo_ready &= pio_sm_is_tx_fifo_full(gen_pio, chans[c].sm);
+        }
+    } while (!fifo_ready && absolute_time_diff_us(get_absolute_time(), fifo_deadline) > 0);
     if (sm_mask)
         pio_enable_sm_mask_in_sync(gen_pio, sm_mask);
 
@@ -686,14 +710,23 @@ uint8_t signal_gen_tick(void)
 {
     if (!running) return 0;
 
-    uint64_t read_abs = dma_read_abs();
-    uint32_t cycles_sent = (uint32_t)(read_abs / CYCLE_BYTES);
-    if (cycles_sent > tx_count) {
-        uint32_t delta = cycles_sent - tx_count;
-        tx_count = cycles_sent;
+    uint32_t completed = dma_completed_cycles;
+    if (completed > tx_count) {
+        uint32_t delta = completed - tx_count;
+        tx_count = completed;
         cycle_count = (cycle_count + delta) & 0x3Fu;
     }
 
-    current_tx_mask |= maintain_ring_fill();
+    current_tx_mask |= maintain_cycle_buffers();
+    uint32_t stall_mask = 0;
+    for (uint c = 0; c < num_hw_channels; c++) {
+        if (chans[c].hw_ready)
+            stall_mask |= 1u << (PIO_FDEBUG_TXSTALL_LSB + chans[c].sm);
+    }
+    uint32_t stalls = gen_pio->fdebug & stall_mask;
+    if (stalls) {
+        txstall_count += __builtin_popcount(stalls);
+        gen_pio->fdebug = stalls;
+    }
     return current_tx_mask;
 }

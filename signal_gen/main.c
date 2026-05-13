@@ -114,6 +114,7 @@ static void pin_test_task(void)
 // CMD_CLEAR_ALL:  [0x0b]
 // CMD_PIN_TEST:   [0x0c][mode 0/1] — drive configured TX pins at ~10 Hz for probing
 // CMD_PIO_TEST:   [0x0d][mode 0/1] — drive ch0 through PIO FIFO for probing
+// CMD_DIAG:       [0x0e] — returns [OK][txstall:4LE][late:4LE][completed:4LE][handled:4LE]
 #define CMD_PING        0x02
 #define CMD_SET_SLOT    0x03
 #define CMD_CLEAR_SLOT  0x04
@@ -126,6 +127,7 @@ static void pin_test_task(void)
 #define CMD_CLEAR_ALL   0x0B
 #define CMD_PIN_TEST    0x0C
 #define CMD_PIO_TEST    0x0D
+#define CMD_DIAG        0x0E
 
 #define RSP_OK          0x00
 #define RSP_ERR_INVALID 0x01
@@ -259,8 +261,10 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         break;
 
     case CMD_STOP:
-        pin_test_set(false);
         send_response(RSP_OK);
+        tud_task();
+        tud_vendor_write_flush();
+        pin_test_set(false);
         break;
 
     case CMD_UPDATE: {
@@ -345,6 +349,27 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         pin_test_enabled = false;
         send_response(signal_gen_pio_test(0, data[1] != 0) ? RSP_OK : RSP_ERR_INVALID);
         break;
+
+    case CMD_DIAG: {
+        signal_gen_diag_t diag;
+        signal_gen_diag(&diag);
+        uint8_t buf[17] = { RSP_OK };
+        uint32_t values[4] = {
+            diag.txstall_count,
+            diag.late_buffer_count,
+            diag.completed_cycles,
+            diag.handled_cycles,
+        };
+        for (uint i = 0; i < 4; i++) {
+            buf[1u + i * 4u] = (uint8_t)values[i];
+            buf[2u + i * 4u] = (uint8_t)(values[i] >> 8);
+            buf[3u + i * 4u] = (uint8_t)(values[i] >> 16);
+            buf[4u + i * 4u] = (uint8_t)(values[i] >> 24);
+        }
+        tud_vendor_write(buf, sizeof(buf));
+        tud_vendor_write_flush();
+        break;
+    }
 
     default:
         send_response(RSP_ERR_INVALID);
