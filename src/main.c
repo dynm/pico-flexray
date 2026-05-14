@@ -26,6 +26,10 @@
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
 
+#define ENABLE_PERIODIC_STATS 0
+#define STATS_PERIOD_MS 5000
+#define DIAG_FRAME_ID 0x10
+
 extern char __end__;
 extern char __StackTop;
 extern char __StackLimit;
@@ -113,21 +117,63 @@ typedef struct {
     uint32_t source_fr4;
     uint32_t overflow_len;
     uint32_t zero_len;
+    uint32_t panda_push_fail;
+    uint32_t diag_seen;
+    uint32_t diag_gap;
+    uint32_t diag_repeat;
+    uint32_t diag_backward;
+    uint8_t diag_expected;
+    uint8_t diag_last;
+    bool diag_has_value;
 } stream_stats_t;
 
 uint8_t FRAME_CACHE[262][10];
 
+#if ENABLE_PERIODIC_STATS
 static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t prev_valid)
 {
-    uint32_t total_fps = (s->len_ok - prev_total) / 5;
-    uint32_t valid_fps = (s->valid - prev_valid) / 5;
+    uint32_t total_fps = (s->len_ok - prev_total) / (STATS_PERIOD_MS / 1000);
+    uint32_t valid_fps = (s->valid - prev_valid) / (STATS_PERIOD_MS / 1000);
 
-    printf("Ring Stats: total=%lu seq_gap=%lu src[FR1=%lu,FR2=%lu,FR3=%lu,FR4=%lu] len_ok=%lu len_mis=%lu overflow=%lu zero=%lu parse_fail=%lu valid=%lu | fps[frames=%lu/s,valid=%lu/s]\n",
+    printf("Ring Stats: total=%lu seq_gap=%lu src[FR1=%lu,FR2=%lu,FR3=%lu,FR4=%lu] len_ok=%lu len_mis=%lu overflow=%lu zero=%lu parse_fail=%lu valid=%lu push_fail=%lu | fps[frames=%lu/s,valid=%lu/s]\n",
            s->total_notif, s->seq_gap, s->source_fr1, s->source_fr2,
            s->source_fr3, s->source_fr4,
            s->len_ok, s->len_mismatch, s->overflow_len, s->zero_len,
-           s->parse_fail, s->valid, total_fps, valid_fps);
-    printf("Notify dropped=%lu\n", notify_queue_dropped());
+           s->parse_fail, s->valid, s->panda_push_fail, total_fps, valid_fps);
+    printf("Notify dropped=%lu diag_id=0x%02x seen=%lu gap=%lu repeat=%lu backward=%lu last=%u expected=%u\n",
+           notify_queue_dropped(), DIAG_FRAME_ID, s->diag_seen, s->diag_gap,
+           s->diag_repeat, s->diag_backward, s->diag_last, s->diag_expected);
+}
+#endif
+
+static void diag_track_frame(stream_stats_t *s, const flexray_frame_t *frame)
+{
+    if (frame->frame_id != DIAG_FRAME_ID) {
+        return;
+    }
+
+    uint8_t value = frame->cycle_count & 0x3F;
+    if (!s->diag_has_value) {
+        s->diag_has_value = true;
+        s->diag_expected = (uint8_t)((value + 1u) & 0x3Fu);
+        s->diag_last = value;
+        s->diag_seen++;
+        return;
+    }
+
+    if (value != s->diag_expected) {
+        if (value == s->diag_last) {
+            s->diag_repeat++;
+        } else if (((value - s->diag_expected) & 0x3F) < 32) {
+            s->diag_gap++;
+        } else {
+            s->diag_backward++;
+        }
+    }
+
+    s->diag_expected = (uint8_t)((value + 1u) & 0x3Fu);
+    s->diag_last = value;
+    s->diag_seen++;
 }
 
 void core1_entry(void)
@@ -245,12 +291,14 @@ int main(void)
 
     uint8_t temp_buffer[MAX_FRAME_BUF_SIZE_BYTES];
 
-	absolute_time_t next_stats_print_time = make_timeout_time_ms(5000);
+	absolute_time_t next_stats_print_time = make_timeout_time_ms(STATS_PERIOD_MS);
 	absolute_time_t next_led_toggle_time = make_timeout_time_ms(500);
 	bool led_on = false;
+#if ENABLE_PERIODIC_STATS
     // Track previous len_ok to compute parsed-frames FPS
     uint32_t prev_total = 0;
     uint32_t prev_valid = 0;
+#endif
 
     while (true)
     {
@@ -263,11 +311,15 @@ int main(void)
 		}
         if (time_reached(next_stats_print_time))
         {
-            next_stats_print_time = make_timeout_time_ms(5000);
+#if ENABLE_PERIODIC_STATS
+            next_stats_print_time = make_timeout_time_ms(STATS_PERIOD_MS);
             stats_print(&stats, prev_total, prev_valid);
             prev_total = stats.len_ok;
             prev_valid = stats.valid;
             print_ram_usage();
+#else
+            next_stats_print_time = make_timeout_time_ms(STATS_PERIOD_MS);
+#endif
         }
 
         // Consume frame-end notifications from core1 (FR1/FR2 only;
@@ -368,7 +420,10 @@ int main(void)
                         if (demuxed & FROM_FR4) stats.source_fr4++;
                     }
                     try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
-                    panda_flexray_fifo_push(&frame);
+                    diag_track_frame(&stats, &frame);
+                    if (!panda_flexray_fifo_push(&frame)) {
+                        stats.panda_push_fail++;
+                    }
                 }
 
                 pos = (uint16_t)(pos + expected_len);
