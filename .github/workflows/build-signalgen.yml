@@ -22,6 +22,8 @@ jobs:
   build:
     name: Build RP2040 and RP2350 UF2
     runs-on: ubuntu-24.04
+    env:
+      PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
 
     steps:
       - name: Check out firmware
@@ -45,8 +47,6 @@ jobs:
             ninja-build
 
       - name: Configure
-        env:
-          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
