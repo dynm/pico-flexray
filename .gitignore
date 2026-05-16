@@ -6,3 +6,4 @@ unused
 __pycache__
 *.csv
 web/index.html
+.wrangler
