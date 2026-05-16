@@ -49,6 +49,14 @@
   .btn-stop:hover:not(:disabled) { background: #fca5a5; }
   .btn-bootloader { background: var(--orange); color: var(--bg); }
   .btn-bootloader:hover:not(:disabled) { background: #fdba74; }
+  .btn-link {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: inherit; font-size: 0.8rem; font-weight: 600;
+    padding: 8px 16px; border-radius: 5px; text-decoration: none;
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn-link:hover { border-color: var(--accent); color: var(--accent); }
   .btn-small {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     padding: 5px 9px; font-size: 0.7rem;
@@ -188,6 +196,8 @@
   @media (max-width: 700px) {
     .slots { grid-template-columns: repeat(2, 1fr); }
     .pin-grid { grid-template-columns: repeat(2, 1fr); }
+    .conn-row { align-items: stretch; }
+    .conn-row button, .conn-row .btn-link { flex: 1 1 auto; }
   }
 </style>
 </head>
@@ -201,6 +211,7 @@
   <div class="conn-row">
     <button class="btn-connect" id="btn-connect" onclick="toggleConnect()">Connect</button>
     <button class="btn-bootloader" id="btn-bootloader" disabled onclick="rebootBootloader()">Boot to bootloader</button>
+    <a class="btn-link" href="https://github.com/dynm/pico-flexray/releases/tag/signal-gen-v0.1.0" target="_blank" rel="noopener">Download firmware</a>
     <span><span class="status-dot" id="status-dot"></span><span id="status-text">Disconnected</span></span>
   </div>
 </div>

@@ -6,12 +6,12 @@ on:
       - main
       - signal-gen
     tags:
-      - "v*"
+      - "signal-gen-v*"
   pull_request:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to publish, for example v0.2.0. Leave empty to only build artifacts."
+        description: "Release tag to publish, for example signal-gen-v0.2.0. Leave empty to only build artifacts."
         required: false
         type: string
 
@@ -91,6 +91,6 @@ jobs:
           tag_name: ${{ steps.release.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: SignalGen ${{ steps.release.outputs.tag }}
+          body: SignalGen firmware release.
           files: dist/*
           fail_on_unmatched_files: true
-          generate_release_notes: true
