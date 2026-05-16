@@ -35,6 +35,12 @@ if(NOT PICO_FLEXRAY_SINGLE_TARGET)
         -DCMAKE_BUILD_TYPE=${child_build_type}
     )
 
+    if(PICO_SDK_PATH)
+        list(APPEND child_common_args -DPICO_SDK_PATH=${PICO_SDK_PATH})
+    elseif(DEFINED ENV{PICO_SDK_PATH})
+        list(APPEND child_common_args -DPICO_SDK_PATH=$ENV{PICO_SDK_PATH})
+    endif()
+
     ExternalProject_Add(flexray_signal_gen_rp2040
         SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
         BINARY_DIR ${CMAKE_BINARY_DIR}/rp2040
