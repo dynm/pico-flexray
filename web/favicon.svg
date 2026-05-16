@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FlexRay ray fish square wave icon">
+  <rect width="64" height="64" rx="10" fill="#020817"/>
+  <path d="M7 45c12-4 18.8-12 20.5-24 4.8 6.6 12.8 6.4 23.8-.6-2.7 5.3-.5 10.8 6.7 16.6-8.8 1.5-14.6 5.9-17.5 13.2-5-6.2-12.8-8-23.4-5.5-3.4.8-6.8.9-10.1.3Z" fill="#1d6cff"/>
+  <path d="M18 30c8.5-1.1 16.1-4.7 22.8-10.8-4.9 2.3-9.3 2.7-13.3 1.1-1.5 6.8-4.7 10-9.5 9.7Z" fill="#72c7ff"/>
+  <path d="M12 36h10v-12h8v21h8v-14h8v9h8" fill="none" stroke="#8cff3c" stroke-width="5.5" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M12 36h10v-12h8v21h8v-14h8v9h8" fill="none" stroke="#d7ff9a" stroke-width="2.2" stroke-linecap="square" stroke-linejoin="miter"/>
+</svg>

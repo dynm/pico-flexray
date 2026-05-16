@@ -1,0 +1,62 @@
+; FlexRay Signal Generator PIO Program
+; Outputs a pre-rendered FlexRay wire-level bitstream from DMA-fed data.
+; Each wire bit is encoded as two FIFO bits: active-low TXEN then TXD.
+; TXD and TXEN pins can be any GPIOs; they do not need to be adjacent.
+;
+; The C side expands future 5 ms cycles into per-channel ping/pong buffers.
+; Disabled slots are encoded as continuous recessive bits (1), while active
+; slots include TSS/FSS/BSS/data/FES/CID bits in the stream itself.
+;
+; Data fed via FIFO/DMA:
+;   Packed TXEN/TXD bit pairs, MSB first (DMA with bswap). A chained control
+;   DMA rearms the data DMA at each full-cycle boundary.
+
+.program flexray_signal_gen
+.fifo tx
+.mov_status txfifo < 1
+.out 1 left auto 32
+
+idle:
+    set pins, 1                 ; TXEN disabled
+    pull block                  ; wait for first data word
+
+.wrap_target
+    out y, 1                    ; TXEN bit (1 = disabled, 0 = enabled)
+    jmp !y txen_low
+    set pins, 1                 ; TXEN high
+    jmp txd_out
+txen_low:
+    set pins, 0                 ; TXEN low
+    nop
+txd_out:
+    out pins, 1                 ; TXD bit
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void flexray_signal_gen_program_init(PIO pio, uint sm, uint offset,
+                                                    uint tx_pin, uint txen_pin) {
+    pio_gpio_init(pio, tx_pin);
+    pio_gpio_init(pio, txen_pin);
+    gpio_pull_up(tx_pin);
+    gpio_pull_up(txen_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, txen_pin, 1, true);
+
+    pio_sm_config c = flexray_signal_gen_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, txen_pin, 1);
+    sm_config_set_out_pins(&c, tx_pin, 1);
+
+    // 10 Mbit/s FlexRay, 5 PIO instructions per wire bit.
+    float div = (float)clock_get_hz(clk_sys) / (10.0f * 1000000.0f * 5.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+
+    pio_sm_set_pins_with_mask(pio, sm,
+        (1u << tx_pin) | (1u << txen_pin),
+        (1u << tx_pin) | (1u << txen_pin));
+}
+%}

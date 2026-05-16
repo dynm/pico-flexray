@@ -1,0 +1,99 @@
+name: Build SignalGen UF2
+
+on:
+  push:
+    branches:
+      - main
+      - signal-gen
+    tags:
+      - "signal-gen-v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish, for example signal-gen-v0.2.0. Leave empty to only build artifacts."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build RP2040 and RP2350 UF2
+    runs-on: ubuntu-24.04
+    env:
+      PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+
+    steps:
+      - name: Check out firmware
+        uses: actions/checkout@v4
+
+      - name: Check out Raspberry Pi Pico SDK
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake \
+            gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib \
+            ninja-build
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Prepare UF2 artifacts
+        run: |
+          mkdir -p dist
+          cp build/flexray_signal_gen_rp2040.uf2 dist/flexray_signal_gen_rp2040.uf2
+          cp build/flexray_signal_gen_rp2350.uf2 dist/flexray_signal_gen_rp2350.uf2
+          sha256sum dist/*.uf2 > dist/SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flexray-signalgen-uf2
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Decide release tag
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#signal-gen-}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${RELEASE_TAG_INPUT}" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${RELEASE_TAG_INPUT}" >> "$GITHUB_OUTPUT"
+            echo "version=${RELEASE_TAG_INPUT#signal-gen-}" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        if: steps.release.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: FlexRay Signal Gen ${{ steps.release.outputs.version }}
+          body: FlexRay Signal Gen firmware release.
+          files: dist/*
+          fail_on_unmatched_files: true
