@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pico-FlexRay Frame Blocker</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: Canvas; color: CanvasText; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 20px; }
+    h1 { margin: 0 0 18px; font-size: 28px; font-weight: 650; }
+    .panel { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 8px; padding: 18px; }
+    .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+    label { display: grid; gap: 6px; font-size: 13px; }
+    input[type="text"] { width: 150px; padding: 9px 10px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); font: inherit; }
+    button { padding: 10px 13px; border: 0; border-radius: 6px; background: #1769e0; color: white; font: inherit; cursor: pointer; }
+    button.secondary { background: color-mix(in srgb, CanvasText 12%, transparent); color: CanvasText; }
+    button.danger { background: #b3261e; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .checks { display: flex; gap: 14px; padding-bottom: 10px; }
+    .checks label { display: inline-flex; align-items: center; gap: 6px; }
+    #status { margin-top: 14px; min-height: 22px; font-size: 13px; color: color-mix(in srgb, CanvasText 70%, transparent); }
+    table { width: 100%; margin-top: 18px; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); padding: 8px 4px; text-align: left; font-size: 13px; }
+    td:last-child, th:last-child { text-align: right; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Pico-FlexRay Frame Blocker</h1>
+  <section class="panel">
+    <div class="row">
+      <button id="connect">Connect</button>
+      <label>
+        Frame ID
+        <input id="frameId" type="text" placeholder="0x48 or 72" autocomplete="off">
+      </label>
+      <div class="checks">
+        <label><input id="fr1" type="checkbox" checked> FR1->FR2</label>
+        <label><input id="fr2" type="checkbox" checked> FR2->FR1</label>
+        <label><input id="fr3" type="checkbox"> FR3->FR4</label>
+        <label><input id="fr4" type="checkbox"> FR4->FR3</label>
+      </div>
+      <button id="enable" disabled>Block</button>
+      <button id="disable" class="secondary" disabled>Unblock</button>
+      <button id="clear" class="danger" disabled>Clear All</button>
+    </div>
+    <div id="status"></div>
+    <table>
+      <thead>
+        <tr><th>Frame ID</th><th>Sources</th><th>State</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+const PANDA_VID = 0x3801;
+const PANDA_PID = 0xddcc;
+const VENDOR_INTERFACE = 0;
+const EP_VENDOR_OUT = 3;
+const DIR_FR1_TO_FR2 = 1 << 0;
+const DIR_FR2_TO_FR1 = 1 << 1;
+const DIR_FR3_TO_FR4 = 1 << 2;
+const DIR_FR4_TO_FR3 = 1 << 3;
+
+let device = null;
+const blocked = new Map();
+
+const $ = (id) => document.getElementById(id);
+
+function setStatus(text) {
+  $("status").textContent = text;
+}
+
+function parseFrameId(text) {
+  const raw = text.trim();
+  if (!raw) throw new Error("Enter a frame ID.");
+  const id = raw.toLowerCase().startsWith("0x") ? Number.parseInt(raw, 16) : Number.parseInt(raw, 10);
+  if (!Number.isInteger(id) || id < 0 || id > 0x7ff) throw new Error("Frame ID must be 0..0x7ff.");
+  return id;
+}
+
+function sourceMask() {
+  let mask = 0;
+  if ($("fr1").checked) mask |= DIR_FR1_TO_FR2;
+  if ($("fr2").checked) mask |= DIR_FR2_TO_FR1;
+  if ($("fr3").checked) mask |= DIR_FR3_TO_FR4;
+  if ($("fr4").checked) mask |= DIR_FR4_TO_FR3;
+  return mask;
+}
+
+async function send(bytes) {
+  if (!device) throw new Error("Device is not connected.");
+  await device.transferOut(EP_VENDOR_OUT, new Uint8Array(bytes));
+}
+
+async function sendFilterTable() {
+  if (blocked.size > 96) throw new Error("At most 96 filter rules are supported.");
+  const bytes = [0x92, blocked.size > 0 ? 1 : 0, blocked.size];
+  for (const [id, mask] of blocked.entries()) {
+    bytes.push(id & 0xff, (id >> 8) & 0xff, mask & 0x0f);
+  }
+  await send(bytes);
+}
+
+async function connect() {
+  device = await navigator.usb.requestDevice({ filters: [{ vendorId: PANDA_VID, productId: PANDA_PID }] });
+  await device.open();
+  if (device.configuration === null) await device.selectConfiguration(1);
+  await device.claimInterface(VENDOR_INTERFACE);
+  $("enable").disabled = false;
+  $("disable").disabled = false;
+  $("clear").disabled = false;
+  setStatus(`Connected: ${device.productName || "panda"}`);
+}
+
+function setButtons() {
+  const connected = Boolean(device);
+  $("enable").disabled = !connected;
+  $("disable").disabled = !connected;
+  $("clear").disabled = !connected;
+}
+
+function renderRows() {
+  const rows = $("rows");
+  rows.textContent = "";
+  for (const [id, mask] of [...blocked.entries()].sort((a, b) => a[0] - b[0])) {
+    const tr = document.createElement("tr");
+    const sources = [
+      mask & DIR_FR1_TO_FR2 ? "FR1->FR2" : "",
+      mask & DIR_FR2_TO_FR1 ? "FR2->FR1" : "",
+      mask & DIR_FR3_TO_FR4 ? "FR3->FR4" : "",
+      mask & DIR_FR4_TO_FR3 ? "FR4->FR3" : "",
+    ].filter(Boolean).join(", ");
+    tr.innerHTML = `<td>0x${id.toString(16).toUpperCase()}</td><td>${sources}</td><td>Blocked</td>`;
+    rows.appendChild(tr);
+  }
+}
+
+async function setBlock(enabled) {
+  const id = parseFrameId($("frameId").value);
+  const mask = sourceMask();
+  if (enabled && mask === 0) throw new Error("Select at least one source.");
+  if (enabled) blocked.set(id, mask);
+  else blocked.delete(id);
+  await sendFilterTable();
+  renderRows();
+  setStatus(`${enabled ? "Blocking" : "Unblocked"} frame 0x${id.toString(16).toUpperCase()}.`);
+}
+
+$("connect").addEventListener("click", async () => {
+  try { await connect(); } catch (err) { setStatus(err.message || String(err)); }
+});
+
+$("enable").addEventListener("click", async () => {
+  try { await setBlock(true); } catch (err) { setStatus(err.message || String(err)); }
+});
+
+$("disable").addEventListener("click", async () => {
+  try { await setBlock(false); } catch (err) { setStatus(err.message || String(err)); }
+});
+
+$("clear").addEventListener("click", async () => {
+  try {
+    await send([0x93]);
+    blocked.clear();
+    renderRows();
+    setStatus("All blockers cleared.");
+  } catch (err) {
+    setStatus(err.message || String(err));
+  }
+});
+
+if (!("usb" in navigator)) {
+  setStatus("WebUSB is not available in this browser.");
+} else {
+  setButtons();
+}
+</script>
+</body>
+</html>

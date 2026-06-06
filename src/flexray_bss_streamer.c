@@ -1,20 +1,17 @@
-#include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/gpio.h"
 #include "hardware/sync.h"
 #include "hardware/pio.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/clocks.h"
-#include "hardware/structs/sio.h"
-#include "pico/multicore.h"
-
-#include <string.h>
+#include "hardware/timer.h"
 
 #include "flexray_bss_streamer.pio.h"
 #include "flexray_bss_streamer.h"
-#include "flexray_forwarder_with_injector.h"
+#include "flexray_blocker.h"
 #include "flexray_frame.h"
+#include "flexray_injector.h"
+#include "flexray_pins.h"
 
 // ===================== FR1/FR2 (primary) stream state =====================
 uint dma_data_from_fr1_chan;
@@ -23,8 +20,6 @@ static uint dma_rearm_fr1_chan;
 static uint dma_rearm_fr2_chan;
 
 static PIO streamer_pio;
-static uint streamer_sm_fr1;
-static uint streamer_sm_fr2;
 
 volatile uint8_t fr1_ring_buffer[FR1_RING_SIZE_BYTES] __attribute__((aligned(FR1_RING_SIZE_BYTES)));
 volatile uint8_t fr2_ring_buffer[FR2_RING_SIZE_BYTES] __attribute__((aligned(FR2_RING_SIZE_BYTES)));
@@ -39,36 +34,49 @@ static uint dma_rearm_fr3_chan;
 static uint dma_rearm_fr4_chan;
 
 static PIO streamer_pio_fr34;
-static uint streamer_sm_fr3;
-static uint streamer_sm_fr4;
 
 volatile uint8_t fr3_ring_buffer[FR3_RING_SIZE_BYTES] __attribute__((aligned(FR3_RING_SIZE_BYTES)));
 volatile uint8_t fr4_ring_buffer[FR4_RING_SIZE_BYTES] __attribute__((aligned(FR4_RING_SIZE_BYTES)));
 
 static volatile uint32_t fr3_prev_write_idx = 0;
 static volatile uint32_t fr4_prev_write_idx = 0;
+static volatile uint8_t fr34_detected_source = FROM_UNKNOWN;
 
 // ===================== Shared state =====================
 #define DMA_BLOCK_COUNT_BYTES  (4096u | 0x10000000) // self trigger
-
-volatile uint32_t irq_counter = 0;
-volatile uint32_t irq_handler_call_count = 0;
-
-volatile void *buffer_addresses[2] = {
-    (void *)fr1_ring_buffer,
-    (void *)fr2_ring_buffer};
+static volatile uint32_t notify_seq = 0;
+flexray_stream_diag_t flexray_stream_diag;
+volatile uint16_t flexray_unknown_source_ids[32];
+volatile uint32_t flexray_unknown_source_idx;
+volatile flexray_isr_profile_t flexray_isr_profile;
 
 volatile int dma_inject_chan_to_fr1 = -1;
 volatile int dma_inject_chan_to_fr2 = -1;
 volatile int dma_inject_chan_to_fr3 = -1;
 volatile int dma_inject_chan_to_fr4 = -1;
 
-volatile uint32_t current_buffer_index = 0;
-
 static inline uint32_t dma_ring_write_idx(uint dma_chan, volatile uint8_t *ring_base, uint32_t ring_mask)
 {
     uint32_t wa = dma_channel_hw_addr(dma_chan)->write_addr;
     return (wa - (uint32_t)(uintptr_t)ring_base) & ring_mask;
+}
+
+static inline uint8_t dma_ring_size_bits(uint32_t ring_size_bytes)
+{
+    return ring_size_bytes > 1u ? (uint8_t)(32u - __builtin_clz(ring_size_bytes - 1u)) : 0u;
+}
+
+static inline void setup_header_end_irqs(PIO pio,
+                                         irq_handler_t header_handler,
+                                         irq_handler_t end_handler)
+{
+    pio_set_irq0_source_enabled(pio, pis_interrupt4, true);
+    irq_set_exclusive_handler(pio_get_irq_num(pio, 0), header_handler);
+    irq_set_enabled(pio_get_irq_num(pio, 0), true);
+
+    pio_set_irq1_source_enabled(pio, pis_interrupt3, true);
+    irq_set_exclusive_handler(pio_get_irq_num(pio, 1), end_handler);
+    irq_set_enabled(pio_get_irq_num(pio, 1), true);
 }
 
 // ===================== Cross-core notification ring =====================
@@ -78,38 +86,9 @@ static volatile uint16_t notify_head = 0;
 static volatile uint16_t notify_tail = 0;
 static volatile uint32_t notify_dropped = 0;
 
-static volatile uint16_t current_frame_id = 0;
-static volatile uint8_t current_cycle_count = 0;
-
-// Saturating counters per frame ID for FR3/FR4 source identification.
-// A frame must pass header CRC and be seen SOURCE_CONFIRM_THRESHOLD times
-// before it is considered confirmed on that channel.
-#define SOURCE_CONFIRM_THRESHOLD 3
-#define SOURCE_COUNTER_MAX       6
-
-static volatile uint8_t fr3_source_counts[2048];
-static volatile uint8_t fr4_source_counts[2048];
-
-static inline void record_frame_id(volatile uint8_t *counts, uint16_t frame_id)
+static inline void record_fr34_detected_source(bool is_fr4)
 {
-    if (frame_id >= 2048) return;
-    uint8_t c = counts[frame_id];
-    if (c < SOURCE_COUNTER_MAX) counts[frame_id] = c + 1;
-}
-
-uint8_t lookup_frame_source(uint16_t frame_id)
-{
-    if (frame_id >= 2048) return FROM_UNKNOWN;
-    bool fr3 = fr3_source_counts[frame_id] >= SOURCE_CONFIRM_THRESHOLD;
-    bool fr4 = fr4_source_counts[frame_id] >= SOURCE_CONFIRM_THRESHOLD;
-    if (fr3 == fr4) return FROM_UNKNOWN;
-    return fr3 ? FROM_FR3 : FROM_FR4;
-}
-
-void clear_frame_source_bitmaps(void)
-{
-    memset((void *)fr3_source_counts, 0, sizeof(fr3_source_counts));
-    memset((void *)fr4_source_counts, 0, sizeof(fr4_source_counts));
+    fr34_detected_source = is_fr4 ? FROM_FR4 : FROM_FR3;
 }
 
 static inline uint16_t header_crc_from_header(const uint8_t *header)
@@ -119,15 +98,115 @@ static inline uint16_t header_crc_from_header(const uint8_t *header)
                       ((header[4] >> 6) & 0x03));
 }
 
-static inline bool ring_header_crc_valid(const volatile uint8_t *ring_base,
-                                         uint32_t start,
-                                         uint32_t ring_mask)
+static inline void ring_copy_header_from_start(uint8_t *header,
+                                               const volatile uint8_t *ring_base,
+                                               uint32_t start,
+                                               uint32_t ring_mask)
 {
-    uint8_t header[5];
-    for (uint32_t i = 0; i < sizeof(header); i++) {
+    for (uint32_t i = 0; i < 5u; i++) {
         header[i] = ring_base[(start + i) & ring_mask];
     }
-    return calculate_flexray_header_crc(header) == header_crc_from_header(header);
+}
+
+static inline void process_fr12_header_from_ring(volatile uint8_t *ring_base,
+                                                 uint32_t start,
+                                                 uint32_t ring_mask)
+{
+    uint8_t header[5];
+    ring_copy_header_from_start(header, ring_base, start, ring_mask);
+    if (calculate_flexray_header_crc(header) != header_crc_from_header(header)) {
+        flexray_stream_diag.fr12_header_crc_fail++;
+        return;
+    }
+
+    uint16_t frame_id = (uint16_t)(((uint16_t)(header[0] & 0x07) << 8) | header[1]);
+    uint8_t cycle_count = (uint8_t)(header[4] & 0x3F);
+    (void)prepare_inject_frame(frame_id, cycle_count);
+
+    uint8_t direction_mask = flexray_filter_block_mask_for_id(frame_id);
+    direction_mask &= (uint8_t)~injector_block_exclusion_mask_for_frame(frame_id, cycle_count);
+    if (direction_mask != 0u) {
+        flexray_blocker_suppress_direction_mask(direction_mask);
+    }
+}
+
+static inline void service_fr12_header_irq(void)
+{
+    uint32_t fr1_delta = (dma_ring_write_idx(dma_data_from_fr1_chan,
+                                             fr1_ring_buffer,
+                                             FR1_RING_MASK) -
+                          fr1_prev_write_idx) &
+                         FR1_RING_MASK;
+    uint32_t fr2_delta = (dma_ring_write_idx(dma_data_from_fr2_chan,
+                                             fr2_ring_buffer,
+                                             FR2_RING_MASK) -
+                          fr2_prev_write_idx) &
+                         FR2_RING_MASK;
+
+    if (fr2_delta >= 5u) {
+        process_fr12_header_from_ring(fr2_ring_buffer, fr2_prev_write_idx, FR2_RING_MASK);
+    } else if (fr1_delta >= 5u) {
+        process_fr12_header_from_ring(fr1_ring_buffer, fr1_prev_write_idx, FR1_RING_MASK);
+    } else {
+        flexray_stream_diag.fr12_header_no_candidate++;
+    }
+}
+
+static inline bool record_fr34_source_from_header(bool is_fr4,
+                                                  const volatile uint8_t *ring_base,
+                                                  uint32_t start,
+                                                  uint32_t ring_mask)
+{
+    uint8_t header[5];
+    ring_copy_header_from_start(header, ring_base, start, ring_mask);
+    if (calculate_flexray_header_crc(header) != header_crc_from_header(header)) {
+        flexray_stream_diag.fr34_header_crc_fail++;
+        fr34_detected_source = FROM_UNKNOWN;
+        return false;
+    }
+
+    record_fr34_detected_source(is_fr4);
+    return true;
+}
+
+static inline void isr_profile_add(volatile flexray_isr_profile_counter_t *counter,
+                                   uint32_t started_us)
+{
+    uint32_t elapsed = time_us_32() - started_us;
+    counter->count++;
+    counter->total_us += elapsed;
+    if (elapsed > counter->max_us) {
+        counter->max_us = elapsed;
+    }
+}
+
+static inline void service_fr34_header_irq(void)
+{
+    uint32_t fr3_idx = dma_ring_write_idx(dma_data_from_fr3_chan,
+                                          fr3_ring_buffer,
+                                          FR3_RING_MASK);
+    uint32_t fr4_idx = dma_ring_write_idx(dma_data_from_fr4_chan,
+                                          fr4_ring_buffer,
+                                          FR4_RING_MASK);
+    uint32_t fr3_delta = (fr3_idx -
+                          fr3_prev_write_idx) &
+                         FR3_RING_MASK;
+    uint32_t fr4_delta = (fr4_idx -
+                          fr4_prev_write_idx) &
+                         FR4_RING_MASK;
+
+    if (fr4_delta >= 5u) {
+        if (record_fr34_source_from_header(true, fr4_ring_buffer, fr4_prev_write_idx, FR4_RING_MASK)) {
+            flexray_stream_diag.fr34_header_record_fr4++;
+        }
+    } else if (fr3_delta >= 5u) {
+        if (record_fr34_source_from_header(false, fr3_ring_buffer, fr3_prev_write_idx, FR3_RING_MASK)) {
+            flexray_stream_diag.fr34_header_record_fr3++;
+        }
+    } else {
+        fr34_detected_source = FROM_UNKNOWN;
+        flexray_stream_diag.fr34_header_no_candidate++;
+    }
 }
 
 void notify_queue_init(void)
@@ -169,114 +248,97 @@ uint32_t notify_queue_dropped(void)
     return notify_dropped;
 }
 
-// ===================== FR1/FR2 IRQ handler =====================
-void __time_critical_func(streamer_irq0_handler)(void)
+// ===================== FR1/FR2 header IRQ handler =====================
+void __time_critical_func(streamer_header_irq_handler)(void)
 {
-    sio_hw->gpio_set = (1u << 7);
-    uint32_t start_idx = 0;
+    uint32_t started_us = time_us_32();
+    flexray_stream_diag.fr12_header_irq++;
+    pio_interrupt_clear(streamer_pio, 4);
+    service_fr12_header_irq();
+    isr_profile_add(&flexray_isr_profile.fr12_header, started_us);
+}
 
-    irq_handler_call_count++;
+// ===================== FR1/FR2 frame-end IRQ handler =====================
+void __time_critical_func(streamer_frame_end_irq_handler)(void)
+{
+    uint32_t started_us = time_us_32();
+
     pio_interrupt_clear(streamer_pio, 3);
 
     uint32_t fr1_idx_now = dma_ring_write_idx(dma_data_from_fr1_chan, fr1_ring_buffer, FR1_RING_MASK);
     uint32_t fr2_idx_now = dma_ring_write_idx(dma_data_from_fr2_chan, fr2_ring_buffer, FR2_RING_MASK);
 
-    bool fr1_advanced = (fr1_idx_now != fr1_prev_write_idx);
-    bool fr2_advanced = (fr2_idx_now != fr2_prev_write_idx);
+    uint32_t fr1_delta = (fr1_idx_now - fr1_prev_write_idx) & FR1_RING_MASK;
+    uint32_t fr2_delta = (fr2_idx_now - fr2_prev_write_idx) & FR2_RING_MASK;
+    bool is_fr2 = fr2_delta > fr1_delta;
+    uint32_t idx = is_fr2 ? fr2_idx_now : fr1_idx_now;
 
-    uint32_t idx = 0;
-    bool is_fr2 = false;
-
-    if (fr1_advanced && !fr2_advanced)
-    {
-        start_idx = fr1_prev_write_idx;
-        idx = fr1_idx_now;
+    if (is_fr2) {
+        fr2_prev_write_idx = fr2_idx_now;
+    } else {
         fr1_prev_write_idx = fr1_idx_now;
     }
-    else if (!fr1_advanced && fr2_advanced)
-    {
-        start_idx = fr2_prev_write_idx;
-        idx = fr2_idx_now;
-        is_fr2 = true;
-        fr2_prev_write_idx = fr2_idx_now;
-    }
-    else
-    {
-        uint32_t fr1_delta = (fr1_idx_now - fr1_prev_write_idx) & FR1_RING_MASK;
-        uint32_t fr2_delta = (fr2_idx_now - fr2_prev_write_idx) & FR2_RING_MASK;
-        if (fr2_delta > fr1_delta)
-        {
-            start_idx = fr2_prev_write_idx;
-            idx = fr2_idx_now;
-            is_fr2 = true;
-            fr2_prev_write_idx = fr2_idx_now;
-        }
-        else
-        {
-            start_idx = fr1_prev_write_idx;
-            idx = fr1_idx_now;
-            fr1_prev_write_idx = fr1_idx_now;
-        }
+
+    uint8_t fr34_source = fr34_detected_source;
+    fr34_detected_source = FROM_UNKNOWN;
+    if (fr34_source == FROM_UNKNOWN) {
+        flexray_stream_diag.source_lookup_unknown_empty++;
     }
 
-    {
-        volatile uint8_t *ring_base = is_fr2 ? fr2_ring_buffer : fr1_ring_buffer;
-        uint32_t ring_mask = is_fr2 ? FR2_RING_MASK : FR1_RING_MASK;
+    injector_note_frame_end();
+    flexray_blocker_release_all();
+    inject_prepared_frame();
 
-        uint8_t h0 = ring_base[(start_idx + 0) & ring_mask];
-        uint8_t h1 = ring_base[(start_idx + 1) & ring_mask];
-        uint8_t h4 = ring_base[(start_idx + 4) & ring_mask];
-        current_frame_id = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
-        current_cycle_count = (uint8_t)(h4 & 0x3F);
-
-        try_inject_frame(current_frame_id, current_cycle_count);
-    }
-
-    uint32_t encoded = notify_encode(is_fr2, 0, ((irq_counter++) & 0x3FFFF), (uint16_t)idx);
+    uint32_t encoded = notify_encode(is_fr2, fr34_source, ((notify_seq++) & 0x1FFFF), (uint16_t)idx);
     (void)notify_queue_push(encoded);
-    sio_hw->gpio_clr = (1u << 7);
+    isr_profile_add(&flexray_isr_profile.fr12_end, started_us);
 }
 
-// ===================== FR3/FR4 IRQ handler =====================
-// Only records frame IDs seen on each channel for demuxing FR1/FR2.
-// Does NOT push to the notify queue.
-void __time_critical_func(streamer_fr34_irq0_handler)(void)
+// ===================== FR3/FR4 header IRQ handler =====================
+void __time_critical_func(streamer_fr34_header_irq_handler)(void)
 {
-    sio_hw->gpio_set = (1u << 7);
+    uint32_t started_us = time_us_32();
+    flexray_stream_diag.fr34_header_irq++;
+    pio_interrupt_clear(streamer_pio_fr34, 4);
+    service_fr34_header_irq();
+    isr_profile_add(&flexray_isr_profile.fr34_header, started_us);
+}
+
+// ===================== FR3/FR4 frame-end IRQ handler =====================
+void __time_critical_func(streamer_fr34_frame_end_irq_handler)(void)
+{
+    uint32_t started_us = time_us_32();
+    flexray_stream_diag.fr34_frame_end_irq++;
     pio_interrupt_clear(streamer_pio_fr34, 3);
 
     uint32_t fr3_idx_now = dma_ring_write_idx(dma_data_from_fr3_chan, fr3_ring_buffer, FR3_RING_MASK);
     uint32_t fr4_idx_now = dma_ring_write_idx(dma_data_from_fr4_chan, fr4_ring_buffer, FR4_RING_MASK);
+    bool fr3_advanced = fr3_idx_now != fr3_prev_write_idx;
+    bool fr4_advanced = fr4_idx_now != fr4_prev_write_idx;
 
-    if (fr3_idx_now != fr3_prev_write_idx) {
-        uint32_t start = fr3_prev_write_idx;
-        if (ring_header_crc_valid(fr3_ring_buffer, start, FR3_RING_MASK)) {
-            uint8_t h0 = fr3_ring_buffer[(start + 0) & FR3_RING_MASK];
-            uint8_t h1 = fr3_ring_buffer[(start + 1) & FR3_RING_MASK];
-            uint16_t fid = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
-            record_frame_id(fr3_source_counts, fid);
-        }
+    if (fr3_advanced && fr4_advanced) {
+        flexray_stream_diag.fr34_frame_end_both_advanced++;
+    } else if (fr3_advanced) {
+        flexray_stream_diag.fr34_frame_end_fr3_only++;
+    } else if (fr4_advanced) {
+        flexray_stream_diag.fr34_frame_end_fr4_only++;
+    } else {
+        flexray_stream_diag.fr34_frame_end_no_advance++;
+    }
+
+    if (fr3_advanced) {
         fr3_prev_write_idx = fr3_idx_now;
     }
 
-    if (fr4_idx_now != fr4_prev_write_idx) {
-        uint32_t start = fr4_prev_write_idx;
-        if (ring_header_crc_valid(fr4_ring_buffer, start, FR4_RING_MASK)) {
-            uint8_t h0 = fr4_ring_buffer[(start + 0) & FR4_RING_MASK];
-            uint8_t h1 = fr4_ring_buffer[(start + 1) & FR4_RING_MASK];
-            uint16_t fid = (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
-            record_frame_id(fr4_source_counts, fid);
-        }
+    if (fr4_advanced) {
         fr4_prev_write_idx = fr4_idx_now;
     }
 
-    sio_hw->gpio_clr = (1u << 7);
+    isr_profile_add(&flexray_isr_profile.fr34_end, started_us);
 }
 
 // ===================== FR1/FR2 setup =====================
-void setup_stream(PIO pio,
-                  uint rx_pin_from_fr1, uint tx_en_pin_to_fr2,
-                  uint rx_pin_from_fr2, uint tx_en_pin_to_fr1)
+void setup_stream(PIO pio)
 {
     streamer_pio = pio;
 
@@ -284,11 +346,8 @@ void setup_stream(PIO pio,
     uint sm_fr1 = pio_claim_unused_sm(pio, true);
     uint sm_fr2 = pio_claim_unused_sm(pio, true);
 
-    streamer_sm_fr1 = sm_fr1;
-    streamer_sm_fr2 = sm_fr2;
-
-    flexray_bss_streamer_program_init(pio, sm_fr1, offset, rx_pin_from_fr1, tx_en_pin_to_fr2);
-    flexray_bss_streamer_program_init(pio, sm_fr2, offset, rx_pin_from_fr2, tx_en_pin_to_fr1);
+    flexray_bss_streamer_program_init(pio, sm_fr1, offset, RXD_FR_1_PIN, TXEN_FR_2_PIN);
+    flexray_bss_streamer_program_init(pio, sm_fr2, offset, RXD_FR_2_PIN, TXEN_FR_1_PIN);
     dma_data_from_fr1_chan = dma_claim_unused_channel(true);
     dma_data_from_fr2_chan = dma_claim_unused_channel(true);
     dma_channel_config dma_c_fr1 = dma_channel_get_default_config(dma_data_from_fr1_chan);
@@ -302,19 +361,8 @@ void setup_stream(PIO pio,
     channel_config_set_dreq(&dma_c_fr1, pio_get_dreq(pio, sm_fr1, false));
     channel_config_set_dreq(&dma_c_fr2, pio_get_dreq(pio, sm_fr2, false));
 
-    uint8_t fr1_ring_bits = 0;
-    if (FR1_RING_SIZE_BYTES > 1)
-    {
-        fr1_ring_bits = 32 - __builtin_clz(FR1_RING_SIZE_BYTES - 1);
-    }
-    channel_config_set_ring(&dma_c_fr1, true, fr1_ring_bits);
-
-    uint8_t fr2_ring_bits = 0;
-    if (FR2_RING_SIZE_BYTES > 1)
-    {
-        fr2_ring_bits = 32 - __builtin_clz(FR2_RING_SIZE_BYTES - 1);
-    }
-    channel_config_set_ring(&dma_c_fr2, true, fr2_ring_bits);
+    channel_config_set_ring(&dma_c_fr1, true, dma_ring_size_bits(FR1_RING_SIZE_BYTES));
+    channel_config_set_ring(&dma_c_fr2, true, dma_ring_size_bits(FR2_RING_SIZE_BYTES));
     dma_rearm_fr1_chan = dma_claim_unused_channel(true);
     dma_rearm_fr2_chan = dma_claim_unused_channel(true);
     channel_config_set_chain_to(&dma_c_fr1, dma_rearm_fr1_chan);
@@ -331,20 +379,17 @@ void setup_stream(PIO pio,
                           DMA_BLOCK_COUNT_BYTES,
                           true);
 
-    pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
-    irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_irq0_handler);
-    irq_set_enabled(pio_get_irq_num(pio, 0), true);
+    setup_header_end_irqs(pio, streamer_header_irq_handler, streamer_frame_end_irq_handler);
 
     pio_interrupt_clear(pio, 3);
+    pio_interrupt_clear(pio, 4);
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_fr1, true);
     pio_sm_set_enabled(pio, sm_fr2, true);
 }
 
 // ===================== FR3/FR4 setup =====================
-void setup_stream_fr34(PIO pio,
-                       uint rx_pin_from_fr3, uint tx_en_pin_to_fr4,
-                       uint rx_pin_from_fr4, uint tx_en_pin_to_fr3)
+void setup_stream_fr34(PIO pio)
 {
     streamer_pio_fr34 = pio;
 
@@ -352,11 +397,8 @@ void setup_stream_fr34(PIO pio,
     uint sm_fr3 = pio_claim_unused_sm(pio, true);
     uint sm_fr4 = pio_claim_unused_sm(pio, true);
 
-    streamer_sm_fr3 = sm_fr3;
-    streamer_sm_fr4 = sm_fr4;
-
-    flexray_bss_streamer_program_init(pio, sm_fr3, offset, rx_pin_from_fr3, tx_en_pin_to_fr4);
-    flexray_bss_streamer_program_init(pio, sm_fr4, offset, rx_pin_from_fr4, tx_en_pin_to_fr3);
+    flexray_bss_streamer_program_init(pio, sm_fr3, offset, RXD_FR_3_PIN, TXEN_FR_4_PIN);
+    flexray_bss_streamer_program_init(pio, sm_fr4, offset, RXD_FR_4_PIN, TXEN_FR_3_PIN);
 
     dma_data_from_fr3_chan = dma_claim_unused_channel(true);
     dma_data_from_fr4_chan = dma_claim_unused_channel(true);
@@ -371,19 +413,8 @@ void setup_stream_fr34(PIO pio,
     channel_config_set_dreq(&dma_c_fr3, pio_get_dreq(pio, sm_fr3, false));
     channel_config_set_dreq(&dma_c_fr4, pio_get_dreq(pio, sm_fr4, false));
 
-    uint8_t fr3_ring_bits = 0;
-    if (FR3_RING_SIZE_BYTES > 1)
-    {
-        fr3_ring_bits = 32 - __builtin_clz(FR3_RING_SIZE_BYTES - 1);
-    }
-    channel_config_set_ring(&dma_c_fr3, true, fr3_ring_bits);
-
-    uint8_t fr4_ring_bits = 0;
-    if (FR4_RING_SIZE_BYTES > 1)
-    {
-        fr4_ring_bits = 32 - __builtin_clz(FR4_RING_SIZE_BYTES - 1);
-    }
-    channel_config_set_ring(&dma_c_fr4, true, fr4_ring_bits);
+    channel_config_set_ring(&dma_c_fr3, true, dma_ring_size_bits(FR3_RING_SIZE_BYTES));
+    channel_config_set_ring(&dma_c_fr4, true, dma_ring_size_bits(FR4_RING_SIZE_BYTES));
 
     dma_rearm_fr3_chan = dma_claim_unused_channel(true);
     dma_rearm_fr4_chan = dma_claim_unused_channel(true);
@@ -401,11 +432,10 @@ void setup_stream_fr34(PIO pio,
                           DMA_BLOCK_COUNT_BYTES,
                           true);
 
-    pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
-    irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_fr34_irq0_handler);
-    irq_set_enabled(pio_get_irq_num(pio, 0), true);
+    setup_header_end_irqs(pio, streamer_fr34_header_irq_handler, streamer_fr34_frame_end_irq_handler);
 
     pio_interrupt_clear(pio, 3);
+    pio_interrupt_clear(pio, 4);
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_fr3, true);
     pio_sm_set_enabled(pio, sm_fr4, true);

@@ -122,3 +122,17 @@ To visualize FlexRay data using Cabana:
    ```bash
    ./tools/cabana/cabana
    ```
+
+### WebUSB frame blocker
+
+Open `web/frame_blocker.html` in a WebUSB-capable browser and connect the Pico-FlexRay device. Add a FlexRay frame ID to block it on selected target forwarder directions.
+
+The firmware uses the vendor OUT endpoint for runtime control:
+
+| Op | Payload | Description |
+|---:|---|---|
+| `0x92` | `[u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]` | Replace the forwarding filter table. |
+| `0x93` | none | Clear the forwarding filter table. |
+| `0x95` | `[u8 direction_mask]` | Set whitelist-default directions; matching rules pass and all other frames in those directions block. |
+
+The FR1/FR2 streamer raises an early PIO IRQ once the full 5-byte header is in the DMA ring. The IRQ handler verifies the header CRC, decodes the frame ID, and suppresses the selected target forwarder state machines until frame end. This blocks delivery of a valid PDU, but it is a mid-frame suppression rather than a clean empty slot.

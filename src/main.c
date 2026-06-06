@@ -20,7 +20,9 @@
 #include "flexray_frame.h"
 #include "panda_usb.h"
 #include "flexray_bss_streamer.h"
-#include "flexray_forwarder_with_injector.h"
+#include "flexray_forwarder.h"
+#include "flexray_injector.h"
+#include "flexray_pins.h"
 
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
@@ -55,32 +57,6 @@ static void print_ram_usage(void) {
 	       (unsigned long)stack_free);
 }
 
-
-// --- Configuration ---
-
-// -- Streamer Pins --
-#define BGE_PIN 2
-#define STBN_PIN 3
-
-#define LED_PIN 20
-#define RELAY_FR_1_2 17
-#define RELAY_FR_3_4 18
-
-#define TXD_FR_1_PIN 28
-#define TXEN_FR_1_PIN 27
-#define RXD_FR_1_PIN 26
-
-#define TXD_FR_2_PIN 4
-#define TXEN_FR_2_PIN 5
-#define RXD_FR_2_PIN 6
-
-#define TXD_FR_3_PIN 10
-#define TXEN_FR_3_PIN 9
-#define RXD_FR_3_PIN 8
-
-#define TXD_FR_4_PIN 16
-#define TXEN_FR_4_PIN 22
-#define RXD_FR_4_PIN 21
 
 // Forward declaration for the Core 1 counter
 extern volatile uint32_t core1_sent_frame_count;
@@ -129,13 +105,9 @@ static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t p
 
 void core1_entry(void)
 {
-    setup_stream(pio0,
-                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
-                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
+    setup_stream_fr34(pio0);
 
-    setup_stream_fr34(pio1,
-                      RXD_FR_3_PIN, TXEN_FR_4_PIN,
-                      RXD_FR_4_PIN, TXEN_FR_3_PIN);
+    setup_stream(pio1);
     while (1)
     {
         __wfi();
@@ -188,12 +160,7 @@ void setup_pins(void)
     gpio_put(BGE_PIN, 1);
     gpio_put(STBN_PIN, 1);
 
-    // Debug profiling pin: GPIO7 low = idle, high = ISR processing
-    gpio_init(7);
-    gpio_set_dir(7, GPIO_OUT);
-    gpio_put(7, 0);
-
-	// On-board LED
+		// On-board LED
 	gpio_init(LED_PIN);
 	gpio_set_dir(LED_PIN, GPIO_OUT);
 }
@@ -230,11 +197,7 @@ int main(void)
     sleep_ms(500);
 
 
-    setup_forwarder_with_injector(pio2,
-                                  RXD_FR_1_PIN, TXD_FR_2_PIN,
-                                  RXD_FR_2_PIN, TXD_FR_1_PIN,
-                                  RXD_FR_3_PIN, TXD_FR_4_PIN,
-                                  RXD_FR_4_PIN, TXD_FR_3_PIN);
+    setup_forwarder_with_injector(pio2);
 
     stream_stats_t stats = (stream_stats_t){0};
 
@@ -351,11 +314,14 @@ int main(void)
                 {
                     stats.valid++;
 
-                    uint8_t demuxed = lookup_frame_source(frame.frame_id);
+                    uint8_t demuxed = info.fr34_source;
                     if (demuxed != FROM_UNKNOWN) {
                         frame.source |= demuxed;
                         if (demuxed & FROM_FR3) stats.source_fr3++;
                         if (demuxed & FROM_FR4) stats.source_fr4++;
+                    } else {
+                        uint32_t idx = flexray_unknown_source_idx++;
+                        flexray_unknown_source_ids[idx & 31u] = frame.frame_id;
                     }
                     try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
                     panda_flexray_fifo_push(&frame);

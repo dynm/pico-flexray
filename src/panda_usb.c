@@ -4,9 +4,10 @@
 #include "pico/bootrom.h"
 #include "hardware/watchdog.h"
 #include "tusb.h"
+#include "flexray_blocker.h"
 #include "flexray_frame.h"
 #include "flexray_fifo.h"
-#include "flexray_forwarder_with_injector.h"
+#include "flexray_injector.h"
 #include <string.h>
 
 // Add near top after includes
@@ -62,6 +63,12 @@ static bool try_send_from_fifo(const char *context);
 //    - len must equal rule.replace_len
 //  op 0x91: Set injector enable
 //    [0x91][u8 enabled]
+//  op 0x92: Replace forwarding filter table
+//    [0x92][u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]
+//    - direction_mask uses FLEXRAY_FILTER_DIR_* bits from flexray_blocker.h
+//  op 0x93: Clear forwarding filter table
+//  op 0x95: Set whitelist-default directions for forwarding filter
+//    [0x95][u8 direction_mask]; listed directions block by default, rule matches pass
 // ------------------------------------------------------------
 static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
 {
@@ -87,6 +94,35 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             bool en = data[off++] != 0;
             injector_set_enabled(en);
+        } else if (op == 0x92) {
+            if ((uint16_t)(len - off) < 2) {
+                break;
+            }
+            bool enabled = data[off++] != 0;
+            uint8_t count = data[off++];
+            if (count > FLEXRAY_FILTER_MAX_RULES ||
+                (uint16_t)(len - off) < (uint16_t)(count * 3u)) {
+                break;
+            }
+
+            uint16_t ids[FLEXRAY_FILTER_MAX_RULES];
+            uint8_t masks[FLEXRAY_FILTER_MAX_RULES];
+            for (uint8_t i = 0; i < count; i++) {
+                ids[i] = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
+                masks[i] = data[off + 2];
+                off += 3;
+            }
+            if (flexray_filter_set(count, ids, masks)) {
+                flexray_filter_set_enabled(enabled);
+            }
+        } else if (op == 0x93) {
+            flexray_filter_clear();
+            flexray_filter_set_enabled(false);
+        } else if (op == 0x95) {
+            if ((uint16_t)(len - off) < 1) {
+                break;
+            }
+            (void)flexray_filter_set_whitelist_defaults(data[off++]);
         } else if (op == 0x00) {
             continue;
         } else {
@@ -514,16 +550,28 @@ void tud_resume_cb(void)
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 {
     (void)itf;
-    if (bufsize > 0)
-    {
-        handle_vendor_out_payload(buffer, bufsize);
+    uint8_t rxbuf[512];
+    uint16_t total = 0;
+
+    if (bufsize > sizeof(rxbuf)) {
+        bufsize = sizeof(rxbuf);
     }
-    // Drain any additional data queued by USB core
+    if (bufsize > 0) {
+        memcpy(rxbuf, buffer, bufsize);
+        total = bufsize;
+    }
+
+    // Drain additional bytes before parsing so larger filter tables stay whole.
     while (tud_vendor_available()) {
-        uint8_t tmp[256];
-        uint32_t n = tud_vendor_read(tmp, sizeof(tmp));
+        uint32_t space = (uint32_t)(sizeof(rxbuf) - total);
+        if (space == 0) break;
+        uint32_t n = tud_vendor_read(rxbuf + total, space);
         if (n == 0) break;
-        handle_vendor_out_payload(tmp, (uint16_t)n);
+        total = (uint16_t)(total + n);
+    }
+
+    if (total > 0) {
+        handle_vendor_out_payload(rxbuf, total);
     }
     last_usb_activity = get_absolute_time();
 }

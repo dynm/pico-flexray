@@ -34,10 +34,32 @@ static const trigger_rule_t INJECT_TRIGGERS[] = {
 		.replace_len = 14,
 		.direction = INJECT_DIRECTION_TO_FR1,
 	},
+	{
+		.trigger_id = 0x1,
+		.target_id = 0x2,
+		.cycle_mask = 0b11,
+		.cycle_base = 0,
+		.e2e_offset = 0,
+		.e2e_len = 0,
+		.e2e_init_value = 0xf1,
+		.replace_offset = 0,
+		.replace_len = 26,
+		.direction = INJECT_DIRECTION_TO_FR1,
+	},
+	{
+		.trigger_id = 0x1,
+		.target_id = 0x2,
+		.cycle_mask = 0b11,
+		.cycle_base = 1,
+		.e2e_offset = 0,
+		.e2e_len = 0,
+		.e2e_init_value = 0xf1,
+		.replace_offset = 0,
+		.replace_len = 26,
+		.direction = INJECT_DIRECTION_TO_FR1,
+	},
 };
 
 #define NUM_TRIGGER_RULES (sizeof(INJECT_TRIGGERS)/sizeof(INJECT_TRIGGERS[0]))
 
 #endif // FLEXRAY_INJECTOR_RULES_H
-
-

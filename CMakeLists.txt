@@ -5,6 +5,9 @@ cmake_minimum_required(VERSION 3.13)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 # Initialise pico_sdk from installed location
 # (note this can come from environment, CMake cache etc)
@@ -41,7 +44,9 @@ add_executable(pico_flexray
      src/panda_usb.c
      src/usb_descriptors.c
      src/flexray_bss_streamer.c
-     src/flexray_fowarder_with_injector.c
+     src/flexray_blocker.c
+     src/flexray_forwarder.c
+     src/flexray_injector.c
      src/flexray_fifo.c
      )
 
@@ -93,4 +98,3 @@ target_link_libraries(pico_flexray
         )
 
 pico_add_extra_outputs(pico_flexray)
-
