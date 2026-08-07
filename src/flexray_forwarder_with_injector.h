@@ -8,8 +8,14 @@
 // Cache a frame's raw bytes (header+payload+CRC) when rules match
 void try_cache_last_target_frame(uint16_t frame_id, uint8_t cycle_count, uint16_t frame_length, uint8_t *captured_bytes);
 
-// On receiving a frame, check triggers; if matched, mutate template and request injection
-void try_inject_frame(uint16_t frame_id, uint8_t cycle_count);
+// Prepare a matching injection while the configured previous frame is still on the bus.
+bool prepare_inject_frame(uint16_t frame_id, uint8_t cycle_count);
+
+// Drop any stale preparation before processing a new header.
+void discard_prepared_injection(void);
+
+// Start the prepared injection when the trigger frame ends.
+void inject_prepared_frame(void);
 
 void setup_forwarder_with_injector(PIO pio,
     uint rx_pin_from_fr1, uint tx_pin_to_fr2,
@@ -28,5 +34,3 @@ bool injector_is_enabled(void);
 
 
 #endif // FLEXRAY_FORWARDER_WITH_INJECTOR_H
-
-

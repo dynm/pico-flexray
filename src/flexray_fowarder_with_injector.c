@@ -39,7 +39,15 @@ typedef struct {
     uint8_t data[INJECT_FRAME_PADDED_BYTES] __attribute__((aligned(4)));
 } frame_template_t;
 
+typedef struct {
+    uint8_t pending;
+    uint8_t direction;
+    uint16_t len;
+    uint8_t *data;
+} prepared_injection_t;
+
 static frame_template_t TEMPLATES[NUM_TRIGGER_RULES];
+static prepared_injection_t prepared_injection;
 
 // Host override storage: small ring to avoid malloc; single-consumer in ISR context
 typedef struct {
@@ -169,45 +177,67 @@ static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, 
     dma_channel_set_trans_count((uint)dma_chan, (injector_payload_length + 3) / 4, true);
 }
 
-// flexray_frame_t dummy_frame;
-// always fetch cache before store new value
 uint8_t replace_bytes[254];
-void __time_critical_func(try_inject_frame)(uint16_t frame_id, uint8_t cycle_count)
+bool __time_critical_func(prepare_inject_frame)(uint16_t frame_id, uint8_t cycle_count)
 {
-    // Find any trigger where current frame is the "previous" id
+    prepared_injection.pending = 0;
+
+    // Find any trigger where current frame is the configured previous ID.
     for (int i = 0; i < (int)NUM_TRIGGER_RULES; i++) {
-        if (INJECT_TRIGGERS[i].trigger_id != frame_id){
+        const trigger_rule_t *rule = &INJECT_TRIGGERS[i];
+        if (rule->trigger_id != frame_id) {
             continue;
         }
-        if ((uint8_t)(cycle_count & INJECT_TRIGGERS[i].cycle_mask) != INJECT_TRIGGERS[i].cycle_base){
+        if ((uint8_t)(cycle_count & rule->cycle_mask) != rule->cycle_base) {
             continue;
         }
 
-        int target_slot = find_cache_slot_for_id(INJECT_TRIGGERS[i].target_id, cycle_count);
-        if (target_slot < 0){
+        int target_slot = find_cache_slot_for_id(rule->target_id, cycle_count);
+        if (target_slot < 0) {
             continue;
         }
 
         frame_template_t *tpl = &TEMPLATES[target_slot];
-        uint8_t *tpl_payload = tpl->data+5;
-        if (!tpl->valid || tpl->len < 8){
+        uint8_t *tpl_payload = tpl->data + 5;
+        if (!tpl->valid || tpl->len < 8) {
             continue;
         }
 
-        bool has_data = host_override_try_pop_for(INJECT_TRIGGERS[i].target_id, cycle_count, replace_bytes);
+        bool has_data = host_override_try_pop_for(rule->target_id, cycle_count, replace_bytes);
         if (!has_data) {
             continue;
         }
 
-        memcpy(tpl_payload+INJECT_TRIGGERS[i].replace_offset, replace_bytes, INJECT_TRIGGERS[i].replace_len);
-    
-        fix_e2e_payload(tpl_payload+INJECT_TRIGGERS[i].e2e_offset, INJECT_TRIGGERS[i].e2e_init_value, INJECT_TRIGGERS[i].e2e_len);
+        memcpy(tpl_payload + rule->replace_offset, replace_bytes, rule->replace_len);
+        fix_e2e_payload(tpl_payload + rule->e2e_offset, rule->e2e_init_value, rule->e2e_len);
         fix_cycle_count(tpl->data, cycle_count);
         fix_flexray_frame_crc(tpl->data, tpl->len);
-        inject_frame(tpl->data, tpl->len, INJECT_TRIGGERS[i].direction);
-        break; // fire once per triggering frame
-        
+
+        prepared_injection.data = tpl->data;
+        prepared_injection.len = tpl->len;
+        prepared_injection.direction = rule->direction;
+        prepared_injection.pending = 1;
+        return true;
     }
+
+    return false;
+}
+
+void __time_critical_func(discard_prepared_injection)(void)
+{
+    prepared_injection.pending = 0;
+}
+
+void __time_critical_func(inject_prepared_frame)(void)
+{
+    if (!prepared_injection.pending) {
+        return;
+    }
+
+    prepared_injection.pending = 0;
+    inject_frame(prepared_injection.data,
+                 prepared_injection.len,
+                 prepared_injection.direction);
 }
 
 static void setup_inject_dma_channel(volatile int *chan, dma_channel_config *dc, uint sm)

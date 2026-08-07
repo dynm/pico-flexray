@@ -129,13 +129,13 @@ static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t p
 
 void core1_entry(void)
 {
-    setup_stream(pio0,
-                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
-                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
-
-    setup_stream_fr34(pio1,
+    setup_stream_fr34(pio0,
                       RXD_FR_3_PIN, TXEN_FR_4_PIN,
                       RXD_FR_4_PIN, TXEN_FR_3_PIN);
+
+    setup_stream(pio1,
+                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
+                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
     while (1)
     {
         __wfi();
@@ -265,8 +265,7 @@ int main(void)
             print_ram_usage();
         }
 
-        // Consume frame-end notifications from core1 (FR1/FR2 only;
-        // FR3/FR4 ISR just records frame IDs for channel demuxing)
+        // Consume frame-end notifications from core1 (FR1/FR2 only).
         static uint16_t last_end_idx_fr1 = 0;
         static uint16_t last_end_idx_fr2 = 0;
         static uint32_t last_seq = 0;
@@ -282,7 +281,7 @@ int main(void)
             notify_info_t info; notify_decode(encoded, &info);
 
             stats.total_notif++;
-            if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x3FFFF) != 1) stats.seq_gap++;
+            if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x1FFFF) != 1) stats.seq_gap++;
             last_seq = info.seq;
 
             if (info.is_fr2) stats.source_fr2++;
@@ -351,7 +350,7 @@ int main(void)
                 {
                     stats.valid++;
 
-                    uint8_t demuxed = lookup_frame_source(frame.frame_id);
+                    uint8_t demuxed = info.fr34_source;
                     if (demuxed != FROM_UNKNOWN) {
                         frame.source |= demuxed;
                         if (demuxed & FROM_FR3) stats.source_fr3++;
