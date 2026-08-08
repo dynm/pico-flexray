@@ -299,7 +299,7 @@ void __time_critical_func(streamer_fr34_header_irq_handler)(void)
 // ===================== FR3/FR4 frame-end IRQ handler =====================
 void __time_critical_func(streamer_fr34_frame_end_irq_handler)(void)
 {
-    sio_hw->gpio_set = (1u << 7);
+    // sio_hw->gpio_set = (1u << 7);
     pio_interrupt_clear(streamer_pio_fr34, 3);
 
     uint32_t fr3_idx_now = dma_ring_write_idx(dma_data_from_fr3_chan, fr3_ring_buffer, FR3_RING_MASK);
@@ -313,7 +313,7 @@ void __time_critical_func(streamer_fr34_frame_end_irq_handler)(void)
         fr4_prev_write_idx = fr4_idx_now;
     }
 
-    sio_hw->gpio_clr = (1u << 7);
+    // sio_hw->gpio_clr = (1u << 7);
 }
 
 // ===================== FR1/FR2 setup =====================

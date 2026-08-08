@@ -518,13 +518,14 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
     {
         handle_vendor_out_payload(buffer, bufsize);
     }
-    // Drain any additional data queued by USB core
-    while (tud_vendor_available()) {
-        uint8_t tmp[256];
-        uint32_t n = tud_vendor_read(tmp, sizeof(tmp));
-        if (n == 0) break;
-        handle_vendor_out_payload(tmp, (uint16_t)n);
-    }
+
+    // TinyUSB has already mirrored this transfer into its buffered RX FIFO
+    // before invoking the callback. We consumed the callback buffer directly,
+    // so discard the mirrored copy instead of processing the same packet twice.
+#if CFG_TUD_VENDOR_RX_BUFSIZE > 0
+    tud_vendor_read_flush();
+#endif
+
     last_usb_activity = get_absolute_time();
 }
 

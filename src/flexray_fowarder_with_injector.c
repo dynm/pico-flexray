@@ -124,6 +124,10 @@ void try_cache_last_target_frame(uint16_t frame_id, uint8_t cycle_count, uint16_
     if (frame_len > sizeof(TEMPLATES[slot].data)) {
         return;
     }
+    // A complete FlexRay frame is 5 header bytes + payload + 3 CRC bytes.
+    if (frame_len != (uint16_t)(rule->payload_length + 8u)) {
+        return;
+    }
     memcpy(TEMPLATES[slot].data, captured_bytes, frame_len);
     TEMPLATES[slot].len = (uint16_t)frame_len;
     TEMPLATES[slot].valid = 1;
@@ -135,15 +139,17 @@ static void fix_cycle_count(uint8_t *full_frame, uint8_t cycle_count)
     full_frame[4] = (full_frame[4] & 0b11000000) | (cycle_count & 0x3F);
 }
 
-static void fix_e2e_payload(uint8_t *e2e_start_offset, uint8_t init_value, uint8_t len)
+static void fix_e2e_payload(uint8_t *e2e_start_offset, uint8_t init_value,
+                            uint8_t len, const uint8_t data_id[16])
 {
     // advance e2e alive counter lower nibble
-    uint8_t nibble = (e2e_start_offset[1] & 0x0F) + 1;
-    if (nibble == 0x0F) {
-        nibble = 0;
-    }
-    e2e_start_offset[1] = (e2e_start_offset[1] & 0xF0) | (nibble & 0x0F);
-    e2e_start_offset[0] = calculate_autosar_e2e_crc8(e2e_start_offset+1, init_value, len);
+    uint8_t nibble = (e2e_start_offset[1]+1) & 0x0F;
+    uint8_t payload_to_crc8[8];
+    memcpy(payload_to_crc8, e2e_start_offset+1, len);
+    payload_to_crc8[len] = data_id[nibble];
+    e2e_start_offset[1] = (e2e_start_offset[1] & 0xF0) | nibble;
+    payload_to_crc8[0] = e2e_start_offset[1];
+    e2e_start_offset[0] = calculate_autosar_e2e_crc8_0x2f(payload_to_crc8, init_value, (uint8_t)(len + 1u));
 }
 
 static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, uint8_t direction)
@@ -207,9 +213,23 @@ bool __time_critical_func(prepare_inject_frame)(uint16_t frame_id, uint8_t cycle
         if (!has_data) {
             continue;
         }
+        if (rule->replace_len > INJECT_REPLACE_MASK_MAX ||
+            (uint16_t)rule->replace_offset + rule->replace_len > rule->payload_length ||
+            (uint16_t)rule->e2e_len + 1u > 8u ||
+            (uint16_t)rule->e2e_offset + 1u + rule->e2e_len > rule->payload_length) {
+            continue;
+        }
 
-        memcpy(tpl_payload + rule->replace_offset, replace_bytes, rule->replace_len);
-        fix_e2e_payload(tpl_payload + rule->e2e_offset, rule->e2e_init_value, rule->e2e_len);
+        for (uint8_t j = 0; j < rule->replace_len; j++) {
+            uint8_t mask = rule->replace_mask[j];
+            uint8_t *dst = &tpl_payload[rule->replace_offset + j];
+            *dst = (uint8_t)((*dst & (uint8_t)~mask) | (replace_bytes[j] & mask));
+        }
+
+        fix_e2e_payload(tpl_payload + rule->e2e_offset,
+                        rule->e2e_init_value,
+                        rule->e2e_len,
+                        rule->data_id);
         fix_cycle_count(tpl->data, cycle_count);
         fix_flexray_frame_crc(tpl->data, tpl->len);
 
@@ -262,9 +282,8 @@ static void setup_dma(void){
 
 bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uint8_t *bytes)
 {
-    // Host should provide only the replacement slice, not a full frame.
-    // Match the provided id/base against a trigger rule's target_id/cycle_base
-    // and enforce len == rule->replace_len. We use the rule's cycle_mask/cycle_base.
+    // The host sends one integrity CRC byte followed by the complete payload.
+    // Only the configured replacement slice is copied into the cached frame.
     if (bytes == NULL) {
         return false;
     }
@@ -288,12 +307,13 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
     if (matched_rule == NULL) {
         return false;
     }
-    len = len - 1 - matched_rule->replace_offset;
 
-    if (len != matched_rule->replace_len) {
+    if (len != (uint16_t)matched_rule->payload_length + 1u ||
+        (uint16_t)matched_rule->replace_offset + matched_rule->replace_len > matched_rule->payload_length) {
         return false;
     }
-    // bytes+1: skip the first byte, which is the cycle count
+
+    // bytes+1 skips the host integrity CRC byte.
     return host_override_push(id, matched_rule->cycle_mask, matched_rule->cycle_base, matched_rule->replace_len, bytes + 1 + matched_rule->replace_offset);
 }
 

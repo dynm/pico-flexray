@@ -81,6 +81,17 @@ uint8_t __no_inline_not_in_flash_func(calculate_autosar_e2e_crc8)(const uint8_t 
     return crc;
 }
 
+uint8_t __no_inline_not_in_flash_func(calculate_autosar_e2e_crc8_0x2f)(const uint8_t *restrict p, const uint8_t init_value, const uint8_t len)
+{
+    // CRC-8 via LUT: poly 0x2F
+    uint8_t crc = init_value;
+    for (uint8_t i = 0; i < len; i++) {
+        crc = flexray_crc8_0x2f_table[crc ^ p[i]];
+    }
+    crc ^= 0xFF;
+    return crc;
+}
+
 static bool check_header_crc(flexray_frame_t *frame, const uint8_t *raw_buffer)
 {
     uint16_t calculated_crc = calculate_flexray_header_crc(raw_buffer);
