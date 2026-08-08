@@ -269,6 +269,12 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         health->sbu1_voltage_mV = 0;
         health->sbu2_voltage_mV = 0;
         health->som_reset_triggered = 0;
+        health->sound_output_level_pkt = 0;
+        // This Pico reports safetyModel=allOutput and accepts host output
+        // unconditionally. Mirror Panda's allOutput health semantics so MADS
+        // sees the same lateral/longitudinal permission as controlsAllowed.
+        health->controls_allowed_lateral_pkt = health->controls_allowed_pkt;
+        health->controls_allowed_longitudinal_pkt = health->controls_allowed_pkt;
         response_len = sizeof(struct health_t);
         memcpy(response_data, health, response_len);
         // printf("Control Read: GET_HEALTH_PACKET\n");
@@ -294,10 +300,14 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
 
 
     case PANDA_GET_VERSIONS:
-        response_data[0] = 17;
-        response_data[1] = 4;
-        response_data[2] = 5;
-        response_len = 3;
+        {
+            // Latest Panda reports two little-endian ABI hashes. FlexRay uses
+            // a custom bulk protocol, so advertise only the compatible health
+            // ABI and leave the standard CAN-packet ABI unsupported.
+            const uint32_t versions[2] = {HEALTH_PACKET_VERSION, 0u};
+            memcpy(response_data, versions, sizeof(versions));
+            response_len = sizeof(versions);
+        }
         // printf("Control Read: PANDA_GET_VERSIONS\n");
         break;
 

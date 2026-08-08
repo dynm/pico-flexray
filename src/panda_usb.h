@@ -66,7 +66,7 @@
 #define SAFETY_SUBARU               10
 #define SAFETY_MAZDA                11
 
-#define HEALTH_PACKET_VERSION 16
+#define HEALTH_PACKET_VERSION 0xBE6AD9D2u
 struct __attribute__((packed)) health_t {
     uint32_t uptime_pkt;
     uint32_t voltage_pkt;
@@ -93,7 +93,12 @@ struct __attribute__((packed)) health_t {
     uint16_t sbu1_voltage_mV;
     uint16_t sbu2_voltage_mV;
     uint8_t som_reset_triggered;
-  };
+    uint16_t sound_output_level_pkt;
+    uint8_t controls_allowed_lateral_pkt;
+    uint8_t controls_allowed_longitudinal_pkt;
+};
+
+_Static_assert(sizeof(struct health_t) == 61, "Panda health ABI must remain 61 bytes");
   
 #define CAN_HEALTH_PACKET_VERSION 5
 struct __attribute__((packed)) can_health_t {
