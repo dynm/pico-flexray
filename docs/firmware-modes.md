@@ -1,6 +1,6 @@
 # Firmware modes
 
-Select either mode at compile time with `FLEXRAY_FRAME_GEN`.
+Select either mode at compile time with `FLEXRAY_FRAME_GEN`, which defaults to `OFF`.
 
 | Mode | Features | PIO0/1/2 instruction words | DMA channels |
 |---|---|---|---|

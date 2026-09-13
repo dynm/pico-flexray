@@ -17,8 +17,10 @@ Each build directory contains `pico_flexray.uf2` and `pico_flexray.elf`. Set `PI
 
 | Mode | Features | DMA channels |
 |---|---|---|
-| ON (default) | FR1/FR2 bridge + inject + FR2 frame build | 10 |
-| OFF | FR1..FR4 bridge + source identification and inject | 8 |
+| ON | FR1/FR2 bridge + inject + FR2 frame build | 10 |
+| OFF (default) | FR1..FR4 bridge + source identification and inject | 8 |
+
+Frame build is compiled out by default. Enable it explicitly with `-DFLEXRAY_FRAME_GEN=ON`. Existing build directories retain their cached setting; use `-DFLEXRAY_FRAME_GEN=OFF` when reconfiguring a previously enabled build.
 
 See [board_config.h](src/board_config.h) for pin definitions and [firmware modes](docs/firmware-modes.md) for resource allocation and wiring differences. All transmissions require assigned, non-overlapping TDMA slots.
 

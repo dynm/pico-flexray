@@ -3,7 +3,7 @@
 
 // CMake selects one firmware mode; standalone host tests default to frame generation.
 #ifndef FLEXRAY_FRAME_GEN
-#define FLEXRAY_FRAME_GEN 1
+#define FLEXRAY_FRAME_GEN 0
 #endif
 #if FLEXRAY_FRAME_GEN != 0 && FLEXRAY_FRAME_GEN != 1
 #error "FLEXRAY_FRAME_GEN must be 0 or 1"

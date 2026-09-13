@@ -33,7 +33,7 @@ project(pico_flexray C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-option(FLEXRAY_FRAME_GEN "FR1/FR2 with static frame generation (OFF: original four-channel bridge)" ON)
+option(FLEXRAY_FRAME_GEN "FR1/FR2 with static frame generation (OFF: original four-channel bridge)" OFF)
 
 # Add executable. Default name is the project name, version 0.1
 
