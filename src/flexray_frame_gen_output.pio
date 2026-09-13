@@ -1,0 +1,42 @@
+; frame generation owns its lifecycle; no local RX streamer or RX DMA.
+.program flexray_frame_gen_inducer
+.pio_version 1
+.fifo tx
+.mov_status txfifo < 1
+.out 1 right auto 32
+.side_set 1 opt
+.define public TRIGGER_IRQ 3
+.define public DONE_IRQ 2
+.define public PULSE_OVERHEAD 5
+
+; PIO0. Side-set is an internal active-low ownership signal. IRQ7 is
+; forwarded to PIO1 before TSS. The last waveform word follows post-FES idle.
+.wrap_target
+public wait_pace:
+    wait 1 irq TRIGGER_IRQ
+    mov x, status
+    jmp !x packet
+.wrap
+packet:
+    irq next set 7 side 0
+public pulse:
+    out pins, 1
+    out x, 31
+    jmp !x complete
+public delay:
+    jmp x-- delay
+    jmp pulse
+complete:
+    irq next clear 7 side 1
+    irq set DONE_IRQ
+    jmp wait_pace
+
+; PIO1 owns TXEN. SET executes once per ownership edge; WAIT never writes
+; shared pins, so real forwarding remains free to drive TXEN between builds.
+.program flexray_frame_gen_txen
+.wrap_target
+    wait 0 pin 0
+    set pins, 0
+    wait 1 pin 0
+    set pins, 1
+.wrap

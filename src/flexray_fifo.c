@@ -25,9 +25,10 @@ uint32_t flexray_fifo_count(const flexray_fifo_t *fifo) {
 
 bool flexray_fifo_push(flexray_fifo_t *fifo, const flexray_frame_t *frame) {
     if (flexray_fifo_is_full(fifo)) {
-        // FIFO is full, drop the incoming frame.
+        // Low-latency policy: discard the oldest queued frame so the FIFO
+        // always retains the most recent bus traffic.
+        fifo->read_pos = (fifo->read_pos + 1) % FLEXRAY_FIFO_SIZE;
         fifo->stats.frames_dropped++;
-        return false;
     }
 
     memcpy(&fifo->frames[fifo->write_pos], frame, sizeof(flexray_frame_t));

@@ -32,20 +32,20 @@ injector_mode:
     pull               ; if any data remain in osr, discard it
     out y, 32          ; first word is count
     wait 0 pin 0     ; wait BSS low
-    set pins, 0
+    set pins, 0 [5]
     jmp skip_bss_high
 
 inject_loop:
-    set pins, 1 [9]
-    set pins, 0 [1]
+    set pins, 1 [14]
+    set pins, 0 [6]
 skip_bss_high:
     set pins, 0 [6]
     set x, 6
 out_1_byte:
-    out pins, 1 [8]
+    out pins, 1 [13]
     jmp x-- out_1_byte  
 
-    out pins, 1 [8]
+    out pins, 1 [13]
     jmp y--, inject_loop
     set pins, 0
     jmp accept_fes
@@ -66,8 +66,8 @@ void flexray_forwarder_with_injector_program_init(PIO pio, uint sm, uint offset,
 
     sm_config_set_in_pins(&c, rx_pin);
     sm_config_set_jmp_pin(&c, rx_pin);
-    float div = (float)clock_get_hz(clk_sys) / (10 * 1000000 * 10);
-    sm_config_set_clkdiv(&c, div);
+    // 150 MHz / clkdiv 1 = 15 PIO cycles per 10 MHz FlexRay bit.
+    sm_config_set_clkdiv(&c, 1.0f);
 
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);

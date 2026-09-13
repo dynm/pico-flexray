@@ -17,10 +17,23 @@
 #include <unistd.h>
 #include "hardware/regs/addressmap.h"
 
+#include "board_config.h"
+#if FLEXRAY_FRAME_GEN
+#include "flexray_frame_gen.h"
+#endif
 #include "flexray_frame.h"
 #include "panda_usb.h"
 #include "flexray_bss_streamer.h"
 #include "flexray_forwarder_with_injector.h"
+#include "usb_netif.h"
+#include "udp_server.h"
+#include "dhserver.h"
+
+#include "lwip/init.h"
+#include "lwip/netif.h"
+#include "lwip/timeouts.h"
+#include "lwip/ip4_addr.h"
+#include "lwip/def.h"
 
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
@@ -66,22 +79,6 @@ static void print_ram_usage(void) {
 #define RELAY_FR_1_2 17
 #define RELAY_FR_3_4 18
 
-#define TXD_FR_1_PIN 28
-#define TXEN_FR_1_PIN 27
-#define RXD_FR_1_PIN 26
-
-#define TXD_FR_2_PIN 4
-#define TXEN_FR_2_PIN 5
-#define RXD_FR_2_PIN 6
-
-#define TXD_FR_3_PIN 10
-#define TXEN_FR_3_PIN 9
-#define RXD_FR_3_PIN 8
-
-#define TXD_FR_4_PIN 16
-#define TXEN_FR_4_PIN 22
-#define RXD_FR_4_PIN 21
-
 // Forward declaration for the Core 1 counter
 extern volatile uint32_t core1_sent_frame_count;
 
@@ -92,8 +89,10 @@ void print_pin_assignments(void)
     printf("STBN Pin: %02d\n", STBN_PIN);
     printf("FR1 Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FR_1_PIN, TXD_FR_1_PIN, TXEN_FR_1_PIN);
     printf("FR2 Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FR_2_PIN, TXD_FR_2_PIN, TXEN_FR_2_PIN);
+#if !FLEXRAY_FRAME_GEN
     printf("FR3 Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FR_3_PIN, TXD_FR_3_PIN, TXEN_FR_3_PIN);
     printf("FR4 Transceiver Pins: RXD=%02d, TXD=%02d, TXEN=%02d\n", RXD_FR_4_PIN, TXD_FR_4_PIN, TXEN_FR_4_PIN);
+#endif
 }
 
 typedef struct {
@@ -112,30 +111,246 @@ typedef struct {
     uint32_t zero_len;
 } stream_stats_t;
 
+static stream_stats_t stats;
+
+typedef struct {
+    uint32_t flush_attempts;
+    uint32_t flush_ok;
+    uint32_t flush_failures;
+    uint32_t frames_pushed;
+    uint32_t frames_rejected;
+    uint32_t frames_dropped;
+    uint32_t bytes_attempted;
+    uint32_t bytes_dropped;
+} udp_batch_stats_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint32_t uptime_ms;
+    uint32_t total_notif;
+    uint32_t seq_gap;
+    uint32_t len_ok;
+    uint32_t len_mismatch;
+    uint32_t overflow_len;
+    uint32_t zero_len;
+    uint32_t parse_fail;
+    uint32_t valid;
+    uint32_t notify_dropped;
+    udp_batch_stats_t batch;
+    udp_server_stats_t udp;
+    usb_netif_stats_t ncm;
+} profile_stats_wire_t;
+
+#define PROFILE_STATS_MAGIC 0x59524650u
+#define PROFILE_STATS_VERSION 1u
+#define PROFILE_STATS_QUERY "PFRY_STATS"
+
 uint8_t FRAME_CACHE[262][10];
 
-static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t prev_valid)
-{
-    uint32_t total_fps = (s->len_ok - prev_total) / 5;
-    uint32_t valid_fps = (s->valid - prev_valid) / 5;
+// --- USB NCM / lwIP / UDP ---
+static struct netif ncm_netif;
+static ip4_addr_t ncm_ip;
+static ip4_addr_t ncm_netmask;
+static ip4_addr_t ncm_gw;
 
-    printf("Ring Stats: total=%lu seq_gap=%lu src[FR1=%lu,FR2=%lu,FR3=%lu,FR4=%lu] len_ok=%lu len_mis=%lu overflow=%lu zero=%lu parse_fail=%lu valid=%lu | fps[frames=%lu/s,valid=%lu/s]\n",
-           s->total_notif, s->seq_gap, s->source_fr1, s->source_fr2,
-           s->source_fr3, s->source_fr4,
-           s->len_ok, s->len_mismatch, s->overflow_len, s->zero_len,
-           s->parse_fail, s->valid, total_fps, valid_fps);
-    printf("Notify dropped=%lu\n", notify_queue_dropped());
+// Minimal DHCP server: hand out IPs on 192.168.7.0/24 with no router/gateway.
+#define DHCP_NUM_ENTRIES 3
+#define DHCP_INIT_IP4(a, b, c, d) { PP_HTONL(LWIP_MAKEU32(a, b, c, d)) }
+static dhcp_entry_t dhcp_entries[DHCP_NUM_ENTRIES] = {
+    {{0}, DHCP_INIT_IP4(192, 168, 7, 2), 24 * 60 * 60},
+    {{0}, DHCP_INIT_IP4(192, 168, 7, 3), 24 * 60 * 60},
+    {{0}, DHCP_INIT_IP4(192, 168, 7, 4), 24 * 60 * 60},
+};
+static const dhcp_config_t dhcp_config = {
+    .router = {0},       // no default route
+    .port = 67,
+    .dns = {0},          // no DNS server
+    .domain = NULL,
+    .num_entry = DHCP_NUM_ENTRIES,
+    .entries = dhcp_entries,
+};
+
+static void ncm_udp_recv_handler(const uint8_t *data, uint16_t len,
+                                 const ip_addr_t *addr, uint16_t port);
+
+// Low-latency micro-batching for the high-rate FlexRay stream. Keep UDP below
+// the Ethernet MTU, wait briefly for fuller datagrams, and queue completed
+// batches so transient USB NCM backpressure does not discard whole batches.
+#define UDP_BATCH_BUF_SIZE 1400u
+#define UDP_BATCH_FLUSH_MS 4u
+#define UDP_PENDING_BATCH_SLOTS 16u
+#define UDP_PENDING_SEND_BUDGET 2u
+#define NOTIFY_PROCESS_BUDGET 32u
+
+typedef struct {
+    uint16_t len;
+    uint16_t frame_count;
+    uint8_t data[UDP_BATCH_BUF_SIZE];
+} udp_pending_batch_t;
+
+static uint8_t udp_batch_buf[UDP_BATCH_BUF_SIZE];
+static uint16_t udp_batch_len;
+static uint16_t udp_batch_frame_count;
+static absolute_time_t udp_batch_deadline;
+static udp_batch_stats_t udp_batch_stats;
+static udp_pending_batch_t udp_pending_batches[UDP_PENDING_BATCH_SLOTS];
+static uint8_t udp_pending_head;
+static uint8_t udp_pending_tail;
+static uint8_t udp_pending_count;
+
+static void udp_batch_cancel_all(void)
+{
+    // Switching to an actively consumed Panda Bulk-IN stream is intentional
+    // routing, not congestion loss. Discard data that has not yet been handed
+    // to NCM so the two transports do not compete for Full-Speed USB.
+    udp_batch_len = 0;
+    udp_batch_frame_count = 0;
+    udp_pending_head = 0;
+    udp_pending_tail = 0;
+    udp_pending_count = 0;
+}
+
+static void udp_batch_commit(void)
+{
+    if (udp_batch_len == 0)
+    {
+        return;
+    }
+
+    if (udp_pending_count < UDP_PENDING_BATCH_SLOTS)
+    {
+        udp_pending_batch_t *pending = &udp_pending_batches[udp_pending_tail];
+        pending->len = udp_batch_len;
+        pending->frame_count = udp_batch_frame_count;
+        memcpy(pending->data, udp_batch_buf, udp_batch_len);
+        udp_pending_tail = (uint8_t)((udp_pending_tail + 1u) % UDP_PENDING_BATCH_SLOTS);
+        udp_pending_count++;
+    }
+    else
+    {
+        // Preserve the older queued stream in order; only a sustained USB
+        // outage long enough to fill the bounded queue drops a new batch.
+        udp_batch_stats.frames_dropped += udp_batch_frame_count;
+        udp_batch_stats.bytes_dropped += udp_batch_len;
+    }
+    udp_batch_len = 0;
+    udp_batch_frame_count = 0;
+}
+
+static void udp_batch_service_pending(void)
+{
+    uint32_t budget = UDP_PENDING_SEND_BUDGET;
+
+    while (udp_pending_count > 0 && budget-- > 0)
+    {
+        udp_pending_batch_t *pending = &udp_pending_batches[udp_pending_head];
+        udp_batch_stats.flush_attempts++;
+        udp_batch_stats.bytes_attempted += pending->len;
+        if (!udp_server_send(pending->data, pending->len))
+        {
+            // NCM has no free IN NTB right now. Keep this exact batch at the
+            // head and retry after TinyUSB has serviced the next USB event.
+            udp_batch_stats.flush_failures++;
+            break;
+        }
+
+        udp_batch_stats.flush_ok++;
+        udp_pending_head = (uint8_t)((udp_pending_head + 1u) % UDP_PENDING_BATCH_SLOTS);
+        udp_pending_count--;
+    }
+}
+
+// Bitmask-to-decimal source byte, matching panda_usb.c source_decimal
+// (FR1=bit3, FR2=bit2, FR3=bit1, FR4=bit0). This is the combined source ID used by
+// the USB pandad flexray path (13 = FR1+FR3 EPS, 14 = FR1+FR4 common,
+// 24 = FR2+FR4 vehicle).
+static uint8_t source_decimal_lookup(uint8_t mask)
+{
+    static const uint8_t source_decimal[16] = {
+        0, 4, 3, 34, 2, 24, 23, 234, 1, 14, 13, 134, 12, 124, 123, 0
+    };
+    return source_decimal[mask & 0x0F];
+}
+
+// Append one USB-pandad FlexRay record:
+// [u8 source][5B header][payload][3B CRC].
+static void udp_batch_push_frame(const uint8_t *header, uint16_t frame_len, uint8_t source_mask)
+{
+    uint16_t record_len = (uint16_t)(frame_len + 1u);
+    if (frame_len > FRAME_BUF_SIZE_BYTES || record_len > UDP_BATCH_BUF_SIZE)
+    {
+        udp_batch_stats.frames_rejected++;
+        return;
+    }
+    if (udp_batch_len == 0)
+    {
+        udp_batch_deadline = make_timeout_time_ms(UDP_BATCH_FLUSH_MS);
+    }
+    if ((uint16_t)(udp_batch_len + record_len) > UDP_BATCH_BUF_SIZE)
+    {
+        udp_batch_commit();
+        udp_batch_deadline = make_timeout_time_ms(UDP_BATCH_FLUSH_MS);
+    }
+    udp_batch_buf[udp_batch_len++] = source_decimal_lookup(source_mask);
+    memcpy(udp_batch_buf + udp_batch_len, header, frame_len);
+    udp_batch_len = (uint16_t)(udp_batch_len + frame_len);
+    udp_batch_frame_count++;
+    udp_batch_stats.frames_pushed++;
+}
+
+static void ncm_udp_recv_handler(const uint8_t *data, uint16_t len,
+                                 const ip_addr_t *addr, uint16_t port)
+{
+    static const char query[] = PROFILE_STATS_QUERY;
+
+    if (len == sizeof(query) - 1u && memcmp(data, query, sizeof(query) - 1u) == 0)
+    {
+        udp_server_stats_t udp_stats;
+        usb_netif_stats_t ncm_stats;
+        profile_stats_wire_t snapshot = {
+            .magic = PROFILE_STATS_MAGIC,
+            .version = PROFILE_STATS_VERSION,
+            .size = sizeof(profile_stats_wire_t),
+            .uptime_ms = to_ms_since_boot(get_absolute_time()),
+            .total_notif = stats.total_notif,
+            .seq_gap = stats.seq_gap,
+            .len_ok = stats.len_ok,
+            .len_mismatch = stats.len_mismatch,
+            .overflow_len = stats.overflow_len,
+            .zero_len = stats.zero_len,
+            .parse_fail = stats.parse_fail,
+            .valid = stats.valid,
+            .notify_dropped = notify_queue_dropped(),
+            .batch = udp_batch_stats,
+        };
+        udp_server_get_stats(&udp_stats);
+        usb_netif_get_stats(&ncm_stats);
+        snapshot.udp = udp_stats;
+        snapshot.ncm = ncm_stats;
+        (void)udp_server_sendto(addr, port, &snapshot, sizeof(snapshot));
+        return;
+    }
+
+    printf("UDP: recv %u bytes from %s:%u\n",
+           (unsigned)len, ip4addr_ntoa(ip_2_ip4(addr)), (unsigned)port);
 }
 
 void core1_entry(void)
 {
-    setup_stream(pio0,
-                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
-                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
-
-    setup_stream_fr34(pio1,
+#if !FLEXRAY_FRAME_GEN
+    setup_stream_fr34(pio0,
                       RXD_FR_3_PIN, TXEN_FR_4_PIN,
                       RXD_FR_4_PIN, TXEN_FR_3_PIN);
+#endif
+
+    setup_stream(pio1,
+                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
+                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
+#if FLEXRAY_FRAME_GEN
+    flexray_frame_gen_init();
+#endif
     while (1)
     {
         __wfi();
@@ -155,23 +370,37 @@ void setup_pins(void)
 
     gpio_pull_up(TXEN_FR_1_PIN);
     gpio_pull_up(TXEN_FR_2_PIN);
+#if FLEXRAY_FRAME_GEN
+    // GPIO16 carries the inducer; keep both unused transceivers disabled.
+    const uint unused_txen_pins[] = {TXEN_FR_3_PIN, TXEN_FR_4_PIN};
+    for (uint i = 0; i < count_of(unused_txen_pins); i++) {
+        gpio_init(unused_txen_pins[i]);
+        gpio_put(unused_txen_pins[i], 1);
+        gpio_set_dir(unused_txen_pins[i], GPIO_OUT);
+    }
+#else
     gpio_pull_up(TXEN_FR_3_PIN);
     gpio_pull_up(TXEN_FR_4_PIN);
+#endif
 
     gpio_init(RXD_FR_1_PIN);
     gpio_set_dir(RXD_FR_1_PIN, GPIO_IN);
     gpio_init(RXD_FR_2_PIN);
     gpio_set_dir(RXD_FR_2_PIN, GPIO_IN);
 
+#if !FLEXRAY_FRAME_GEN
     gpio_init(RXD_FR_3_PIN);
     gpio_set_dir(RXD_FR_3_PIN, GPIO_IN);
     gpio_init(RXD_FR_4_PIN);
     gpio_set_dir(RXD_FR_4_PIN, GPIO_IN);
+#endif
 
     gpio_pull_up(RXD_FR_1_PIN);
     gpio_pull_up(RXD_FR_2_PIN);
+#if !FLEXRAY_FRAME_GEN
     gpio_pull_up(RXD_FR_3_PIN);
     gpio_pull_up(RXD_FR_4_PIN);
+#endif
 
     gpio_init(RELAY_FR_1_2);
     gpio_set_dir(RELAY_FR_1_2, GPIO_OUT);
@@ -202,7 +431,7 @@ int main(void)
 {
     setup_pins();
 
-    bool clock_configured = set_sys_clock_khz(100000, true);
+    bool clock_configured = set_sys_clock_khz(150000, true);
     stdio_init_all();
     printf("static_used=%lu B\n", (unsigned long)((uintptr_t)&__end__ - (uintptr_t)SRAM_BASE));
     print_ram_usage();
@@ -210,15 +439,32 @@ int main(void)
     panda_usb_init();
     // Initialize cross-core notification queue before starting streams
     notify_queue_init();
-    // --- Set system clock to 100MHz (RP2350) ---
-    // make PIO clock div has no fraction, reduce jitter
+
+    // Initialize lwIP + the USB NCM netif + the UDP server
+    lwip_init();
+    IP4_ADDR(&ncm_ip, 192, 168, 7, 1);
+    IP4_ADDR(&ncm_netmask, 255, 255, 255, 0);
+    IP4_ADDR(&ncm_gw, 0, 0, 0, 0);
+    usb_netif_init(&ncm_netif, &ncm_ip, &ncm_netmask, &ncm_gw);
+    udp_server_init();
+    udp_server_set_recv_handler(ncm_udp_recv_handler);
+    udp_inject_server_init();
+    if (dhserv_init(&dhcp_config) != ERR_OK)
+    {
+        printf("Warning: DHCP server init failed\n");
+    }
+    printf("USB NCM netif up, DHCP + UDP server on port %d + inject on %d\n",
+           UDP_SERVER_PORT, UDP_INJECT_PORT);
+
+    // --- Keep the RP2350 system clock at 150 MHz ---
+    // The FlexRay PIO programs run with clkdiv = 1 and use 15 cycles per bit.
     if (!clock_configured)
     {
         printf("Warning: Failed to set system clock, using default\n");
     }
     else
     {
-        printf("System clock set to 125MHz\n");
+        printf("System clock set to 150MHz\n");
     }
 
     print_pin_assignments();
@@ -226,8 +472,10 @@ int main(void)
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
     printf("\n--- FlexRay Continuous Streaming Bridge (Forwarder Mode) ---\n");
 
+#if !FLEXRAY_FRAME_GEN
     multicore_launch_core1(core1_entry);
     sleep_ms(500);
+#endif
 
 
     setup_forwarder_with_injector(pio2,
@@ -235,38 +483,40 @@ int main(void)
                                   RXD_FR_2_PIN, TXD_FR_1_PIN,
                                   RXD_FR_3_PIN, TXD_FR_4_PIN,
                                   RXD_FR_4_PIN, TXD_FR_3_PIN);
-
-    stream_stats_t stats = (stream_stats_t){0};
+#if FLEXRAY_FRAME_GEN
+    // Build on core1 requires the forwarder program and DMA to be ready.
+    multicore_launch_core1(core1_entry);
+    sleep_ms(500);
+#endif
 
     uint8_t temp_buffer[MAX_FRAME_BUF_SIZE_BYTES];
 
-	absolute_time_t next_stats_print_time = make_timeout_time_ms(5000);
 	absolute_time_t next_led_toggle_time = make_timeout_time_ms(500);
 	bool led_on = false;
-    // Track previous len_ok to compute parsed-frames FPS
-    uint32_t prev_total = 0;
-    uint32_t prev_valid = 0;
 
     while (true)
     {
         panda_usb_task();
+        usb_netif_poll();
+        sys_check_timeouts();
+        bool vendor_stream_active = panda_usb_vendor_stream_active();
+        if (vendor_stream_active &&
+            (udp_batch_len > 0 || udp_pending_count > 0))
+        {
+            udp_batch_cancel_all();
+        }
+        if (udp_batch_len > 0 && time_reached(udp_batch_deadline))
+        {
+            udp_batch_commit();
+        }
+		udp_batch_service_pending();
 		if (time_reached(next_led_toggle_time))
 		{
 			next_led_toggle_time = make_timeout_time_ms(500);
 			led_on = !led_on;
 			gpio_put(LED_PIN, led_on);
 		}
-        if (time_reached(next_stats_print_time))
-        {
-            next_stats_print_time = make_timeout_time_ms(5000);
-            stats_print(&stats, prev_total, prev_valid);
-            prev_total = stats.len_ok;
-            prev_valid = stats.valid;
-            print_ram_usage();
-        }
-
-        // Consume frame-end notifications from core1 (FR1/FR2 only;
-        // FR3/FR4 ISR just records frame IDs for channel demuxing)
+        // Consume frame-end notifications from core1 (FR1/FR2 only).
         static uint16_t last_end_idx_fr1 = 0;
         static uint16_t last_end_idx_fr2 = 0;
         static uint32_t last_seq = 0;
@@ -274,15 +524,23 @@ int main(void)
         uint32_t encoded;
         if (!notify_queue_pop(&encoded))
         {
+            // Do not sleep while a USB batch is waiting for a free NCM NTB;
+            // the next pass services TinyUSB and retries it immediately.
+            if (udp_pending_count > 0)
+            {
+                continue;
+            }
             panda_usb_task();
-            __wfe();
+            // Service host transports regularly while FlexRay is quiet.
+            (void)best_effort_wfe_or_timeout(make_timeout_time_us(1000));
             continue;
         }
+        uint32_t notify_budget = NOTIFY_PROCESS_BUDGET;
         do {
             notify_info_t info; notify_decode(encoded, &info);
 
             stats.total_notif++;
-            if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x3FFFF) != 1) stats.seq_gap++;
+            if (stats.total_notif > 1 && ((info.seq - last_seq) & 0x3FFF) != 1) stats.seq_gap++;
             last_seq = info.seq;
 
             if (info.is_fr2) stats.source_fr2++;
@@ -351,14 +609,23 @@ int main(void)
                 {
                     stats.valid++;
 
-                    uint8_t demuxed = lookup_frame_source(frame.frame_id);
+#if !FLEXRAY_FRAME_GEN
+                    uint8_t demuxed = info.fr34_source;
                     if (demuxed != FROM_UNKNOWN) {
                         frame.source |= demuxed;
                         if (demuxed & FROM_FR3) stats.source_fr3++;
                         if (demuxed & FROM_FR4) stats.source_fr4++;
                     }
+#endif
                     try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
                     panda_flexray_fifo_push(&frame);
+
+                    // Micro-batch raw FlexRay frames for NCM efficiency. A
+                    // bounded retry queue absorbs transient USB backpressure.
+                    if (udp_server_has_peer() && !vendor_stream_active)
+                    {
+                        udp_batch_push_frame(header, expected_len, frame.source);
+                    }
                 }
 
                 pos = (uint16_t)(pos + expected_len);
@@ -366,7 +633,7 @@ int main(void)
 
             if (info.is_fr2) last_end_idx_fr2 = info.end_idx;
             else last_end_idx_fr1 = info.end_idx;
-        } while (notify_queue_pop(&encoded));
+        } while (--notify_budget > 0 && notify_queue_pop(&encoded));
     }
 
     return 0;

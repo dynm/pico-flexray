@@ -7,10 +7,39 @@
 #include "flexray_frame.h"
 #include "flexray_fifo.h"
 #include "flexray_forwarder_with_injector.h"
+#include "rtt_protocol.h"
+#include "usb_netif.h"
+#include "udp_server.h"
+#include "board_config.h"
+#if FLEXRAY_FRAME_GEN
+#include "flexray_frame_gen.h"
+#endif
 #include <string.h>
 
 // Add near top after includes
 static absolute_time_t last_usb_activity = 0;
+
+// A completed Bulk-IN transfer proves that a host reader is consuming the
+// Panda stream. Keep Vendor ownership briefly between FlexRay frames; every
+// subsequent completion renews the lease.
+#define VENDOR_STREAM_ACTIVE_MS 250u
+static absolute_time_t vendor_stream_active_until;
+static bool vendor_stream_seen;
+
+// RTT replies share Vendor Bulk IN with the FlexRay stream. Queue the request
+// metadata so the device-send timestamp is captured when TinyUSB can actually
+// accept the response, and prioritize these small replies over stream data.
+#define USB_RTT_QUEUE_SIZE 8u
+typedef struct {
+    uint32_t sequence;
+    uint64_t host_send_time_us;
+    uint64_t device_receive_time_us;
+} usb_rtt_request_t;
+
+static usb_rtt_request_t usb_rtt_queue[USB_RTT_QUEUE_SIZE];
+static uint8_t usb_rtt_head;
+static uint8_t usb_rtt_tail;
+static uint8_t usb_rtt_count;
 
 // Bitmask-to-decimal: each set bit contributes its channel number as a digit.
 // Index is the 4-bit source bitmask (FR1=bit3, FR2=bit2, FR3=bit1, FR4=bit0).
@@ -53,18 +82,38 @@ static struct
 static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *request);
 static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *request);
 static bool handle_control_data_stage(tusb_control_request_t const *request, uint8_t const *data, uint16_t len);
+static bool control_out_data_length_valid(tusb_control_request_t const *request);
+static bool try_send_rtt_responses(void);
 static bool try_send_from_fifo(const char *context);
+static uint16_t serialize_panda_record(const flexray_frame_t *frame, uint8_t *outbuf);
 // ------------------------------------------------------------
 // Vendor OUT protocol (host -> device)
-//  op 0x90: Push override replacement slice
-//    [0x90][u16 id][u8 base][u16 len][len bytes slice]
+//  op 0x90: Push host integrity byte plus complete payload
+//    [0x90][u16 id][u8 base][u16 len][CRC8 + payload]
 //    - id must match a trigger_rule_t.target_id; base must match rule.cycle_base
-//    - len must equal rule.replace_len
+//    - len must equal rule.payload_length + 1
 //  op 0x91: Set injector enable
 //    [0x91][u8 enabled]
+//  op 0x94: [u16 build FID][u8 base][u16 len][18 payload bytes]
+//  op 0x95: [u8 build enabled] (independent of MITM)
 // ------------------------------------------------------------
-static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
+static void handle_vendor_out_payload(const uint8_t *data, uint16_t len,
+                                      uint64_t receive_time_us)
 {
+    uint32_t sequence;
+    uint64_t host_send_time_us;
+    if (rtt_decode_request(data, len, &sequence, &host_send_time_us)) {
+        if (usb_rtt_count < USB_RTT_QUEUE_SIZE) {
+            usb_rtt_request_t *request = &usb_rtt_queue[usb_rtt_tail];
+            request->sequence = sequence;
+            request->host_send_time_us = host_send_time_us;
+            request->device_receive_time_us = receive_time_us;
+            usb_rtt_tail = (uint8_t)((usb_rtt_tail + 1u) % USB_RTT_QUEUE_SIZE);
+            usb_rtt_count++;
+        }
+        return;
+    }
+
     uint32_t off = 0;
     while ((uint16_t)(len - off) >= 1) {
         uint8_t op = data[off++];
@@ -79,7 +128,8 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             if ((uint16_t)(len - off) < flen) {
                 break;
             }
-            (void)injector_submit_override(id, base, flen, &data[off]);
+            (void)injector_submit_override_from(id, base, flen, &data[off],
+                                                INJECT_TRANSPORT_VENDOR);
             off += flen;
         } else if (op == 0x91) {
             if ((uint16_t)(len - off) < 1) {
@@ -87,7 +137,15 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             bool en = data[off++] != 0;
             injector_set_enabled(en);
-        } else if (op == 0x00) {
+        }
+#if FLEXRAY_FRAME_GEN
+        else if (op == FLEXRAY_FRAME_GEN_OP_PAYLOAD || op == FLEXRAY_FRAME_GEN_OP_SWITCH) {
+            size_t used = flexray_frame_gen_action(data + off - 1u, len - off + 1u);
+            if (!used) break;
+            off += (uint32_t)used - 1u;
+        }
+#endif
+        else if (op == 0x00) {
             continue;
         } else {
             // Unknown op: stop parsing this buffer
@@ -116,11 +174,25 @@ void panda_usb_init(void)
 
     printf("Panda USB initialized - VID:0x%04x PID:0x%04x\n", 0x3801, 0xddcc);
     last_usb_activity = get_absolute_time();
+    vendor_stream_seen = false;
+    usb_rtt_head = 0u;
+    usb_rtt_tail = 0u;
+    usb_rtt_count = 0u;
 }
 
 void panda_usb_task(void)
 {
     tud_task();
+    (void)try_send_rtt_responses();
+    // FlexRay ingestion is processed in bounded main-loop chunks. Queueing
+    // during that chunk and draining here lets TinyUSB aggregate several Panda
+    // records instead of flushing one short Bulk transfer for every frame.
+    (void)try_send_from_fifo("usb_task");
+}
+
+bool panda_usb_vendor_stream_active(void)
+{
+    return vendor_stream_seen && !time_reached(vendor_stream_active_until);
 }
 
 // TinyUSB vendor control transfer callback - this overrides the weak default implementation
@@ -147,6 +219,15 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
             // OUT request
             if (request->wLength > 0)
             {
+                // TinyUSB splits EP0 transfers into endpoint-sized packets, but
+                // it keeps advancing the application buffer until wLength has
+                // been received. Reject unsupported lengths before handing it
+                // this fixed-size buffer or a host can overwrite adjacent BSS.
+                if (!control_out_data_length_valid(request))
+                {
+                    return false;
+                }
+                memset(control_buffer, 0, sizeof(control_buffer));
                 // OUT with data: provide buffer for TinyUSB to receive data
                 return tud_control_xfer(rhport, request, control_buffer, request->wLength);
             }
@@ -161,8 +242,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
         // Handle OUT data stage
         if (!(current_request_local.bmRequestType & TUSB_DIR_IN_MASK) && current_request_local.wLength > 0)
         {
-            handle_control_data_stage(&current_request_local, control_buffer, current_request_local.wLength);
-            // tud_control_status(rhport, request);
+            return handle_control_data_stage(&current_request_local, control_buffer,
+                                             current_request_local.wLength);
         }
         return true;
 
@@ -181,6 +262,25 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
     default:
         // Let TinyUSB handle other stages like DATA
         return true;
+    }
+}
+
+static bool control_out_data_length_valid(tusb_control_request_t const *request)
+{
+    if (request->wLength > CFG_TUD_ENDPOINT0_SIZE)
+    {
+        return false;
+    }
+
+    switch (request->bRequest)
+    {
+    case PANDA_SET_CAN_SPEED_KBPS:
+    case PANDA_SET_CAN_FD_DATA_BITRATE:
+        return request->wLength == 4;
+    case PANDA_SET_CAN_FD_AUTO_SWITCH:
+        return request->wLength == 1;
+    default:
+        return false;
     }
 }
 
@@ -215,6 +315,15 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
             memcpy(response_data, &fan_rpm, sizeof(fan_rpm));
             response_len = sizeof(fan_rpm);
             // printf("Control Read: GET_FAN_RPM -> %d\n", fan_rpm);
+        }
+        break;
+
+    case PANDA_FLEXRAY_INJECT_STATS:
+        {
+            injector_stats_t inject_stats;
+            injector_get_stats(&inject_stats);
+            memcpy(response_data, &inject_stats, sizeof(inject_stats));
+            response_len = sizeof(inject_stats);
         }
         break;
 
@@ -269,6 +378,12 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
         health->sbu1_voltage_mV = 0;
         health->sbu2_voltage_mV = 0;
         health->som_reset_triggered = 0;
+        health->sound_output_level_pkt = 0;
+        // This Pico reports safetyModel=allOutput and accepts host output
+        // unconditionally. Mirror Panda's allOutput health semantics so MADS
+        // sees the same lateral/longitudinal permission as controlsAllowed.
+        health->controls_allowed_lateral_pkt = health->controls_allowed_pkt;
+        health->controls_allowed_longitudinal_pkt = health->controls_allowed_pkt;
         response_len = sizeof(struct health_t);
         memcpy(response_data, health, response_len);
         // printf("Control Read: GET_HEALTH_PACKET\n");
@@ -294,10 +409,14 @@ static bool handle_control_read(uint8_t rhport, tusb_control_request_t const *re
 
 
     case PANDA_GET_VERSIONS:
-        response_data[0] = 17;
-        response_data[1] = 4;
-        response_data[2] = 5;
-        response_len = 3;
+        {
+            // Latest Panda reports two little-endian ABI hashes. FlexRay uses
+            // a custom bulk protocol, so advertise only the compatible health
+            // ABI and leave the standard CAN-packet ABI unsupported.
+            const uint32_t versions[2] = {HEALTH_PACKET_VERSION, 0u};
+            memcpy(response_data, versions, sizeof(versions));
+            response_len = sizeof(versions);
+        }
         // printf("Control Read: PANDA_GET_VERSIONS\n");
         break;
 
@@ -330,6 +449,11 @@ static bool handle_control_write(uint8_t rhport, tusb_control_request_t const *r
     case PANDA_RESET_CAN_COMMS:
         // printf("Control Write: RESET_CAN_COMMS (request=0x%02x)\n", request->bRequest);
         flexray_fifo_init(&flexray_fifo);
+        handled = true;
+        break;
+
+    case PANDA_FLEXRAY_INJECT_STATS_RESET:
+        injector_reset_stats_and_queue();
         handled = true;
         break;
 
@@ -479,6 +603,7 @@ void tud_mount_cb(void)
 {
     printf("USB Device mounted\n");
     last_usb_activity = get_absolute_time();
+    usb_netif_set_link(true);
 }
 
 // Invoked when device is unmounted
@@ -489,6 +614,14 @@ void tud_umount_cb(void)
     // Reset control transfer state - not strictly needed with new design but good practice
     // Reset application state but keep device configuration
     // Don't reset panda_state entirely as it may contain valid configuration
+
+    // Drop the network link, stale ARP entries and the learned UDP peer so a
+    // re-plugged (possibly different) host is handled cleanly.
+    usb_netif_set_link(false);
+    udp_server_reset_peer();
+    usb_rtt_head = 0u;
+    usb_rtt_tail = 0u;
+    usb_rtt_count = 0u;
 
     printf("USB unmount completed - ready for reconnection\n");
 }
@@ -514,17 +647,19 @@ void tud_resume_cb(void)
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 {
     (void)itf;
+    const uint64_t receive_time_us = time_us_64();
     if (bufsize > 0)
     {
-        handle_vendor_out_payload(buffer, bufsize);
+        handle_vendor_out_payload(buffer, bufsize, receive_time_us);
     }
-    // Drain any additional data queued by USB core
-    while (tud_vendor_available()) {
-        uint8_t tmp[256];
-        uint32_t n = tud_vendor_read(tmp, sizeof(tmp));
-        if (n == 0) break;
-        handle_vendor_out_payload(tmp, (uint16_t)n);
-    }
+
+    // TinyUSB has already mirrored this transfer into its buffered RX FIFO
+    // before invoking the callback. We consumed the callback buffer directly,
+    // so discard the mirrored copy instead of processing the same packet twice.
+#if CFG_TUD_VENDOR_RX_BUFSIZE > 0
+    tud_vendor_read_flush();
+#endif
+
     last_usb_activity = get_absolute_time();
 }
 
@@ -532,16 +667,53 @@ void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 void tud_vendor_tx_cb(uint8_t itf, uint32_t sent_bytes)
 {
     (void)itf;
-    (void)sent_bytes;
+
+    if (sent_bytes > 0)
+    {
+        vendor_stream_seen = true;
+        vendor_stream_active_until = make_timeout_time_ms(VENDOR_STREAM_ACTIVE_MS);
+    }
 
     // After a transfer is complete, try to send the next batch of data
-    try_send_from_fifo("tx_cb trigger");
+    (void)try_send_rtt_responses();
+    (void)try_send_from_fifo("tx_cb trigger");
 }
 
 bool panda_flexray_fifo_push(const flexray_frame_t *frame)
 {
-    try_send_from_fifo("fifo_push");
+    // Do not flush on every frame. panda_usb_task() drains the queue on the
+    // next main-loop pass, allowing multiple records to share one USB transfer.
     return flexray_fifo_push(&flexray_fifo, frame);
+}
+
+static bool try_send_rtt_responses(void)
+{
+    if (!tud_vendor_mounted() || usb_rtt_count == 0u ||
+        tud_vendor_write_available() < RTT_RESPONSE_LENGTH) {
+        return false;
+    }
+
+    bool sent_something = false;
+    while (usb_rtt_count > 0u &&
+           tud_vendor_write_available() >= RTT_RESPONSE_LENGTH) {
+        const usb_rtt_request_t *request = &usb_rtt_queue[usb_rtt_head];
+        uint8_t response[RTT_RESPONSE_LENGTH];
+        rtt_build_response(response, request->sequence,
+                           request->host_send_time_us,
+                           request->device_receive_time_us, time_us_64());
+        if (tud_vendor_write(response, sizeof(response)) != sizeof(response)) {
+            break;
+        }
+
+        usb_rtt_head = (uint8_t)((usb_rtt_head + 1u) % USB_RTT_QUEUE_SIZE);
+        usb_rtt_count--;
+        sent_something = true;
+    }
+
+    if (sent_something) {
+        tud_vendor_write_flush();
+    }
+    return sent_something;
 }
 
 // Centralized function to trigger USB transmission from FIFO
@@ -562,73 +734,33 @@ static bool try_send_from_fifo(const char *context)
         return false;
     }
 
-    uint32_t total_sent = 0;
     bool sent_something = false;
-
     while (!flexray_fifo_is_empty(&flexray_fifo))
     {
         flexray_frame_t frame;
-        // Peek first to preserve order in case we cannot send now
         if (!flexray_fifo_peek(&flexray_fifo, &frame))
         {
             break;
         }
 
-        uint16_t payload_len_bytes = (uint16_t)(frame.payload_length_words * 2u);
-        uint16_t body_len = (uint16_t)(1u /*source*/ + 5u /*header*/ + payload_len_bytes + 3u /*crc*/);
-        uint16_t total_len = (uint16_t)(2u /*len field*/ + body_len);
-
-        if (available_space < total_len)
+        uint16_t record_len = (uint16_t)(2u + 1u + 5u +
+            frame.payload_length_words * 2u + 3u);
+        if (available_space < record_len)
         {
-            // Not enough space for the head frame; stop and retry later
             break;
         }
 
-        // Build record into a small stack buffer and write once
         uint8_t outbuf[2 + 1 + 5 + MAX_FRAME_PAYLOAD_BYTES + 3];
-        outbuf[0] = (uint8_t)(body_len & 0xFF);
-        outbuf[1] = (uint8_t)((body_len >> 8) & 0xFF);
-        size_t w = 2;
-        outbuf[w++] = source_decimal[frame.source & 0x0F];
-
-        // Reconstruct 5-byte header
-        uint8_t byte0 = (uint8_t)((frame.indicators << 3) | ((frame.frame_id >> 8) & 0x07));
-        uint8_t byte1 = (uint8_t)(frame.frame_id & 0xFF);
-        uint8_t byte2 = (uint8_t)((frame.payload_length_words << 1) | ((frame.header_crc >> 10) & 0x01));
-        uint8_t byte3 = (uint8_t)((frame.header_crc >> 2) & 0xFF);
-        uint8_t byte4 = (uint8_t)(((frame.header_crc & 0x03) << 6) | (frame.cycle_count & 0x3F));
-        outbuf[w++] = byte0;
-        outbuf[w++] = byte1;
-        outbuf[w++] = byte2;
-        outbuf[w++] = byte3;
-        outbuf[w++] = byte4;
-
-        // Payload (only used portion)
-        if (payload_len_bytes > 0)
+        uint16_t serialized = serialize_panda_record(&frame, outbuf);
+        if (serialized != record_len ||
+            tud_vendor_write(outbuf, serialized) != serialized)
         {
-            memcpy(&outbuf[w], frame.payload, payload_len_bytes);
-            w += payload_len_bytes;
-        }
-
-        // 24-bit CRC big-endian
-        outbuf[w++] = (uint8_t)((frame.frame_crc >> 16) & 0xFF);
-        outbuf[w++] = (uint8_t)((frame.frame_crc >> 8) & 0xFF);
-        outbuf[w++] = (uint8_t)(frame.frame_crc & 0xFF);
-
-        // Write
-        uint32_t written = tud_vendor_write(outbuf, (uint32_t)w);
-        if (written != w)
-        {
-            // On partial write, stop loop; data will be retried next call
             break;
         }
-        // Now we can safely pop the frame since it has been fully queued to USB
+
         (void)flexray_fifo_pop(&flexray_fifo, &frame);
         sent_something = true;
-        total_sent += written;
         available_space = tud_vendor_write_available();
-
-        // If buffer space drops low, flush early to free FIFO in USB core
         if (available_space < MIN_RECORD_SIZE)
         {
             break;
@@ -638,7 +770,33 @@ static bool try_send_from_fifo(const char *context)
     if (sent_something)
     {
         tud_vendor_write_flush();
-        return true;
     }
-    return false;
+    return sent_something;
+}
+
+static uint16_t serialize_panda_record(const flexray_frame_t *frame, uint8_t *outbuf)
+{
+    uint16_t payload_len_bytes = (uint16_t)(frame->payload_length_words * 2u);
+    uint16_t body_len = (uint16_t)(1u + 5u + payload_len_bytes + 3u);
+    uint16_t w = 0;
+
+    outbuf[w++] = (uint8_t)(body_len & 0xFF);
+    outbuf[w++] = (uint8_t)(body_len >> 8);
+    outbuf[w++] = source_decimal[frame->source & 0x0F];
+    outbuf[w++] = (uint8_t)((frame->indicators << 3) | ((frame->frame_id >> 8) & 0x07));
+    outbuf[w++] = (uint8_t)(frame->frame_id & 0xFF);
+    outbuf[w++] = (uint8_t)((frame->payload_length_words << 1) |
+                            ((frame->header_crc >> 10) & 0x01));
+    outbuf[w++] = (uint8_t)(frame->header_crc >> 2);
+    outbuf[w++] = (uint8_t)(((frame->header_crc & 0x03) << 6) |
+                            (frame->cycle_count & 0x3F));
+    if (payload_len_bytes > 0)
+    {
+        memcpy(outbuf + w, frame->payload, payload_len_bytes);
+        w = (uint16_t)(w + payload_len_bytes);
+    }
+    outbuf[w++] = (uint8_t)(frame->frame_crc >> 16);
+    outbuf[w++] = (uint8_t)(frame->frame_crc >> 8);
+    outbuf[w++] = (uint8_t)frame->frame_crc;
+    return w;
 }

@@ -34,6 +34,11 @@ extern "C" {
 #define CFG_TUD_VENDOR            1
 #define CFG_TUD_VENDOR_RX_BUFSIZE 4096
 #define CFG_TUD_VENDOR_TX_BUFSIZE 8192
+// Keep the USB descriptor's Full-Speed max packet at 64 bytes, but let TinyUSB
+// submit several packets per software transfer. The RP2350 DCD splits it into
+// 64-byte hardware packets; fifteen packets gave the best measured Panda
+// throughput on the composite Vendor + NCM device.
+#define CFG_TUD_VENDOR_EPSIZE     960
 
 // Enable debug for troubleshooting (only if not already defined)
 #ifndef CFG_TUSB_DEBUG
@@ -50,10 +55,17 @@ extern "C" {
 #define CFG_TUD_DFU_RUNTIME       0
 #define CFG_TUD_DFU               0
 #define CFG_TUD_ECM_RNDIS         0
-#define CFG_TUD_NCM               0
+#define CFG_TUD_NCM               1
+
+// Network (CDC-NCM) configuration. Full-speed only on RP2350; keep the NTB
+// buffers modest since we only stream UDP datagrams.
+#define CFG_TUD_NCM_IN_NTB_MAX_SIZE   2048
+#define CFG_TUD_NCM_OUT_NTB_MAX_SIZE  2048
+#define CFG_TUD_NCM_IN_NTB_N          2
+#define CFG_TUD_NCM_OUT_NTB_N         1
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _TUSB_CONFIG_H_ */ 
+#endif /* _TUSB_CONFIG_H_ */

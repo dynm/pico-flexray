@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark"><title>FlexRay · Hardware Timing Lab</title>
+<link rel="stylesheet" href="style.css"><script src="app.js" defer></script><script src="source-snapshot.js" defer></script><script src="details.js" defer></script>
+</head>
+<body>
+<header class="topbar"><a class="brand" href="#"><span class="brand-icon">F<span>↗</span></span><strong>FlexRay<span>Hardware Timing Lab</span></strong></a><div class="top-meta"><span class="live-dot"></span>RP2350 <span class="divider">/</span> 150 MHz <span class="version">DESIGN EXPLORER · 01</span></div></header>
+<main>
+<div class="intro"><div><div class="eyebrow">Follow each hardware beat</div><h1>How does a frame travel through the chip?</h1><p>Follow real signals and local frame generation through 3 PIO blocks and 12 state machines.</p></div><span class="sim-badge">Interactive illustration · not live hardware monitoring</span></div>
+<nav class="modes" aria-label="Demo modes"><button data-mode="single"><span>01</span> Single bridge MITM <small>FR1 ↔ FR2</small></button><button data-mode="frame-gen" class="selected"><span>02</span> Frame generation <small>Acquire → lock → calibrate</small></button><button data-mode="dual"><span>03</span> Dual bridge MITM <small>FR1 ↔ FR2 + FR3 ↔ FR4</small></button></nav>
+<div class="workspace">
+<section class="stage panel">
+<div class="panel-heading"><div><span class="eyebrow">Hardware topology</span><h2>All 12 state machines</h2></div><div class="legend"><span><i class="green"></i>Active in this step</span><span><i class="gray"></i>Allocated / waiting</span><span><i class="outline"></i>Free</span></div></div>
+<div class="topology" id="topology">
+<div class="endpoints"><div class="endpoint" id="bus"><span class="port-icon">⇄</span><div><b id="bus-title">FlexRay bus</b><small id="bus-detail">RXD GP26 · hardware FSS</small></div></div><div class="endpoint" id="cpu"><span class="port-icon">⌘</span><div><b>CPU / SRAM</b><small>core1 IRQ · core0 host</small></div></div><div class="endpoint" id="host"><span class="port-icon">↳</span><div><b>USB / NCM</b><small id="host-detail">0x94 payload · 0x95 enable</small></div></div></div>
+<div class="pio-grid" id="pio-grid"></div>
+<div class="endpoints bottom"><div class="endpoint" id="memory"><span class="port-icon">▤</span><div><b id="memory-title">DMA / SRAM</b><small id="memory-detail">FSS samples · templates · schedule</small></div></div><div class="endpoint" id="output"><span class="port-icon">↗</span><div><b id="output-title">FR2 output</b><small id="output-detail">TXD GP4 · TXEN GP5</small></div></div></div>
+<svg id="connections" aria-hidden="true"></svg>
+</div>
+<div class="wire-legend"><span class="wire-key signal">GPIO / level</span><span class="wire-key irq">IRQ / handshake</span><span class="wire-key dma">DMA / data</span></div><div id="wire-details" class="wire-details"></div>
+<div class="resource-strip"><div><small>Instruction words · PIO0 / 1 / 2</small><strong id="words"></strong></div><div><small>Total DMA channels</small><strong id="dma-count">12</strong></div><div><small>SMs in this step</small><strong id="active-count"></strong></div><div><small>Firmware mode</small><strong id="firmware"></strong></div></div>
+<p class="allocation-note" id="allocation-note"></p>
+</section>
+<aside class="lesson panel"><div class="lesson-top"><span class="eyebrow">Step by step</span><span id="step-counter">01 / 09</span></div><div id="steps" class="steps" aria-label="Demo steps"></div><div class="explanation" aria-live="polite"><div id="step-tag" class="step-tag"></div><h2 id="step-title"></h2><p id="step-description"></p><div class="formula" id="formula"></div><p class="key-point" id="key-point"></p></div></aside>
+</div>
+<div class="playbar panel"><div class="play-controls"><button id="reset" class="icon-button" title="Reset demo" aria-label="Reset demo">↺</button><button id="prev" class="icon-button" title="Previous step" aria-label="Previous step">←</button><button id="play" class="play-button">▶ Play</button><button id="next" class="icon-button" title="Next step" aria-label="Next step">→</button><label class="speed">Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label></div><div class="progress-area"><div class="progress-track"><div id="progress"></div></div><span id="progress-label"></span></div><label class="toggle"><input id="host-on" type="checkbox" checked><span class="switch"></span><span>Continuous host data</span></label></div>
+<div class="lower-grid">
+<section class="panel timeline-panel"><div class="panel-heading"><div><span class="eyebrow">Signals and timing</span><h2 id="timeline-title">FSS timeline</h2></div><span class="chip" id="timeline-chip">Illustration · not to scale</span></div><div id="timeline" class="timeline"></div><div class="timeline-footer"><p id="timeline-note"></p><label id="cycle-control">Cycle <input id="cycle" type="range" min="0" max="63" value="3"><output id="cycle-value">03</output></label></div></section>
+<section class="panel experiment"><div class="panel-heading"><div><span class="eyebrow">Change the conditions</span><h2 id="experiment-title">Explore phase changes</h2></div></div><div id="frame-gen-controls"><label class="range-label" for="phase">External FSS offset from prediction <output id="phase-value">+12 clk</output></label><input id="phase" type="range" min="-24" max="24" value="0"><div class="range-ticks"><span>Early −24</span><span>Aligned 0</span><span>Late +24</span></div><div class="phase-comparison" id="phase-comparison"></div><div class="scenario-buttons"><button id="drift">Go to phase calibration</button><button id="sleep">Simulate bus sleep</button></div><p class="micro-note">Offsets are illustrative. Firmware accepts only complete markers inside a bounded window and limits correction magnitude.</p></div><div id="mitm-controls" hidden><div class="callout"><b>What if no new override arrives?</b><p>Turn off host data to see the target forwarded unchanged. MITM follows real TSS/FSS edges and does not create missing target frames.</p></div><div class="mini-flow"><span>Real header</span><b>→</b><span>Prepare</span><b>→</b><span>Real frame-end</span><b>→</b><span>DMA</span></div><p id="mitm-direction" class="micro-note"></p></div></section>
+</div>
+<section id="memory-lab" class="panel memory-lab"></section>
+<section class="panel inspector"><div><span class="eyebrow">Select an SM for details</span><h2 id="inspect-title">PIO2 · SM3 / FSS capture</h2></div><div id="inspect-body"></div></section>
+<section id="detail-library" class="panel detail-library"></section>
+<footer><p>Based on this demo firmware. Signals are slowed and simplified; this is not PIO cycle simulation or electrical validation.</p><a href="../../docs/frame-gen-design.md">Full design notes ↗</a></footer>
+</main>
+</body></html>

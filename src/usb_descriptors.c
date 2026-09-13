@@ -1,4 +1,5 @@
 #include "tusb.h"
+#include "class/net/net_device.h"
 #include "pico/unique_id.h"
 #include <string.h>
 
@@ -8,16 +9,21 @@
 
 #define PICO_FLEXRAY_DONGLE_ID_PREFIX "picoflex"
 
-#define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN)
+#define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_VENDOR_DESC_LEN + TUD_CDC_NCM_DESC_LEN)
 
 enum {
-    ITF_NUM_VENDOR,
+    ITF_NUM_VENDOR = 0,
+    ITF_NUM_NCM_CTRL,
+    ITF_NUM_NCM_DATA,
     ITF_NUM_TOTAL
 };
 
 enum {
     EPNUM_VENDOR_OUT = 0x03,  // Bulk OUT endpoint for CAN data from host to device
-    EPNUM_VENDOR_IN = 0x81    // Bulk IN endpoint for CAN data from device to host
+    EPNUM_VENDOR_IN  = 0x81,  // Bulk IN endpoint for CAN data from device to host
+    EPNUM_NCM_NOTIF  = 0x82,  // NCM notification endpoint
+    EPNUM_NCM_OUT    = 0x04,  // NCM bulk OUT endpoint
+    EPNUM_NCM_IN     = 0x85   // NCM bulk IN endpoint
 };
 
 //--------------------------------------------------------------------+
@@ -48,7 +54,13 @@ uint8_t const desc_cfg[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
 
     // Interface number, string index, EP Out & In address, EP size
-    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 64)
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 64),
+
+    // Interface number, description string index, MAC address string index,
+    // EP notification address and size, EP data address (out, in) and size,
+    // max segment size.
+    TUD_CDC_NCM_DESCRIPTOR(ITF_NUM_NCM_CTRL, 5, 6, EPNUM_NCM_NOTIF, 64, EPNUM_NCM_OUT, EPNUM_NCM_IN,
+        64, CFG_TUD_NET_MTU)
 };
 
 //--------------------------------------------------------------------+
@@ -60,6 +72,8 @@ enum {
     STRID_PRODUCT,
     STRID_SERIAL,
     STRID_INTERFACE,
+    STRID_NET_INTERFACE,
+    STRID_MAC,
 };
 
 char const* string_desc_arr[] = {
@@ -67,7 +81,9 @@ char const* string_desc_arr[] = {
     "comma.ai",              // 1: Manufacturer
     "panda",                 // 2: Product
     NULL,                    // 3: Serial, will be filled from board ID
-    "Panda Interface"        // 4: Interface
+    "Panda Interface",       // 4: Interface
+    "NCM Network Interface", // 5: Network interface
+    NULL                     // 6: MAC address, handled separately
 };
 
 static uint16_t _desc_str[32];
@@ -87,17 +103,17 @@ uint8_t const* tud_descriptor_configuration_cb(uint8_t index) {
 
 uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void)langid;
-    
+
     uint8_t chr_count;
 
     if (index == 0) {
         memcpy(&_desc_str[0], string_desc_arr[0], 2);
         chr_count = 1;
-    } else if (index == 3) {
+    } else if (index == STRID_SERIAL) {
         // Generate serial number from board unique ID
         pico_unique_board_id_t board_id;
         pico_get_unique_board_id(&board_id);
-        
+
         // Build ASCII serial using a hex lookup table (faster and smaller than snprintf)
         static const char hex_digits[] = "0123456789abcdef";
         memcpy(serial_str, PICO_FLEXRAY_DONGLE_ID_PREFIX, strlen(PICO_FLEXRAY_DONGLE_ID_PREFIX));
@@ -109,13 +125,21 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         }
         serial_str[pos] = '\0';
 
-        string_desc_arr[3] = serial_str;
+        string_desc_arr[STRID_SERIAL] = serial_str;
 
         chr_count = strlen(string_desc_arr[index]);
         if (chr_count > 31) chr_count = 31;
 
         for (uint8_t i = 0; i < chr_count; i++) {
             _desc_str[1 + i] = string_desc_arr[index][i];
+        }
+    } else if (index == STRID_MAC) {
+        // Convert the MAC address to an upper-case hex string
+        static const char mac_hex[] = "0123456789ABCDEF";
+        chr_count = 0;
+        for (uint8_t i = 0; i < sizeof(tud_network_mac_address); i++) {
+            _desc_str[1 + chr_count++] = mac_hex[(tud_network_mac_address[i] >> 4) & 0x0F];
+            _desc_str[1 + chr_count++] = mac_hex[tud_network_mac_address[i] & 0x0F];
         }
     } else if (index < sizeof(string_desc_arr) / sizeof(string_desc_arr[0])) {
         const char* str = string_desc_arr[index];
@@ -133,4 +157,4 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     _desc_str[0] = (TUSB_DESC_STRING << 8) | (2 * chr_count + 2);
 
     return _desc_str;
-} 
+}

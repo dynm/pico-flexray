@@ -1,0 +1,101 @@
+; PIO2 SM3 qualifies FSS; PIO0 SM1 samples markers with DMA.
+; Runtime: reuse SM1 for continuous pace; SM3 measures phase in short bursts.
+
+.program flexray_fss_capture
+.pio_version 1
+.fifo rx
+.define public IDLE_COUNT 26
+.define public FSS_IRQ 0
+.define public MARKER_CYCLES 15
+.side_set 1
+
+; JMP_PIN=RXD, IN_BASE=the same port's TXEN, SIDESET=internal marker.
+; Combine IRQ/marker and PUSH/marker to fit ten words beside the injector.
+; Marker starts one clock earlier; phase validation accounts for that clock.
+; Keep edge WAITs independent of interval/phase measurement. Echo or a short
+; LOW that has ended must requalify idle before the original WAIT edge sequence.
+.wrap_target
+public idle:
+    ; 4 + 27 * 6 = 166 clocks before WAIT TSS, matching the original
+    ; 1 + 11 * 15. Observe HIGH every six clocks instead of once per bit:
+    ; a shortened/asynchronous BSS LOW must not alias into false idle.
+    set y, IDLE_COUNT side 0 [3]
+idle_loop:
+    jmp pin idle_high side 0 [1]
+    jmp idle side 0 [5]
+idle_high:
+    jmp y-- idle_loop side 0 [3]
+    wait 0 jmppin side 0
+    wait 1 pin 0 side 0
+    jmp pin idle side 0
+public wait_fss:
+    wait 1 jmppin side 0
+    irq next set FSS_IRQ side 1 [14]
+    push noblock side 0
+.wrap
+
+.program flexray_fss_sampler
+.fifo rx
+.in 1 left auto 32
+; Acquisition only: uninterrupted one-bit-per-clock DMA samples.
+.wrap_target
+    in pins, 1
+.wrap
+
+.program flexray_slot_pace
+.fifo txrx
+.out 32 right auto 32
+.define public FSS_IRQ 0
+.define public PHASE_IRQ 4
+.define public PACE_IRQ 5
+.define public TRIGGER_IRQ 3
+.define public PERIOD_OVERHEAD 9
+.define public TAIL_OVERHEAD 13
+
+; First X starts at a real FSS; its header labels the already running clock.
+; Every static slot has the same X=slot_period-9. After the final slot, zero
+; enters the cycle tail: no slot IRQs are generated here. Guard words occupy
+; one slot period and keep the final shaping word outside DMA/FIFO prefetch
+; until the last static frame's header has arrived. A second zero ends guards.
+; The last X covers the rest of the cycle, including ONE phase correction.
+; DMA restores that word to the nominal period after consuming the block.
+public start:
+    wait 1 irq FSS_IRQ
+.wrap_target
+public countdown:
+    jmp x-- countdown
+    irq set PHASE_IRQ
+    irq set TRIGGER_IRQ
+    mov isr, y
+    push noblock
+    irq set PACE_IRQ
+    jmp y-- next_period
+next_period:
+    out x, 32
+    jmp !x cycle_tail
+.wrap
+
+public cycle_tail:
+    out x, 32
+    jmp !x next_cycle
+public guard:
+    jmp x-- guard
+    jmp cycle_tail
+next_cycle:
+    out x, 32
+    jmp countdown
+
+.program flexray_fss_phase_sampler
+.fifo rx
+.in 1 left auto 32
+.define public PHASE_IRQ 4
+.define public START_DELAY 31
+; Arm before the reference slot. The beat starts a finite phase DMA burst;
+; its first 256 clocks contain the FSS marker. The remaining samples provide
+; a hardware expiry for that cycle's correction. FIFO stalls after DMA ends.
+; Header IRQ reads this already captured window, never timestamps itself.
+public start:
+    wait 1 irq PHASE_IRQ [31]
+.wrap_target
+    in pins, 1
+.wrap

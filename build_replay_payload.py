@@ -11,7 +11,7 @@ Input: frame id, cycle count, payload hex. Produces a 32-bit word stream where:
  - Header CRC-11 and Frame CRC-24 match the C implementation (tables copied)
 
 Example:
-  python build_replay_payload.py --id 0x37 --cycle 0x3B --payload BFD8700991FFFFFF01F0F1FFFFFF8FBD
+  python build_replay_payload.py --id 0x37 --cycle 0x3B --payload 000102030405060708090A0B0C0D0E0F1011
 
 CSV input (id,cycle,payload_hex) also supported:
   python build_replay_payload.py --csv csv/frames.csv
@@ -280,7 +280,7 @@ def process_csv(path: str, indicators: int, idle_words: int, total_words: int) -
 def main(argv: List[str]) -> None:
     # Keep original hint lines for user context
     # frame id, cycle count, payload
-    # 0x37,0x3B,BFD8700991FFFFFF01F0F1FFFFFF8FBD
+    # 0x37,0x3B,000102030405060708090A0B0C0D0E0F1011
     frame_id, cycle, payload_hex, indicators, idle_words, total_words = parse_single_args(argv)
     if frame_id == -1:
         # CSV mode

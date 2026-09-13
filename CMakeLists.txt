@@ -15,9 +15,9 @@ if(WIN32)
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.2.0)
+set(sdkVersion 2.3.0)
 set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0-a4)
+set(picotoolVersion 2.3.0)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -33,6 +33,8 @@ project(pico_flexray C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+option(FLEXRAY_FRAME_GEN "FR1/FR2 with static frame generation (OFF: original four-channel bridge)" ON)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(pico_flexray
@@ -43,7 +45,21 @@ add_executable(pico_flexray
      src/flexray_bss_streamer.c
      src/flexray_fowarder_with_injector.c
      src/flexray_fifo.c
+     src/rtt_protocol.c
+     src/usb_netif.c
+     src/udp_server.c
+     src/dhserver.c
      )
+
+if(FLEXRAY_FRAME_GEN)
+    target_sources(pico_flexray PRIVATE
+        src/flexray_frame_gen.c
+        src/flexray_slot_schedule.c
+        src/flexray_frame_gen_packet.c
+    )
+endif()
+target_compile_definitions(pico_flexray PRIVATE FLEXRAY_FRAME_GEN=$<BOOL:${FLEXRAY_FRAME_GEN}>)
+
 
 pico_set_program_name(pico_flexray "pico_flexray")
 pico_set_program_version(pico_flexray "0.1")
@@ -58,15 +74,22 @@ pico_generate_pio_header(pico_flexray
     ${CMAKE_CURRENT_LIST_DIR}/src/flexray_forwarder_with_injector.pio
     )
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(pico_flexray 1)
+if(FLEXRAY_FRAME_GEN)
+    pico_generate_pio_header(pico_flexray
+        ${CMAKE_CURRENT_LIST_DIR}/src/flexray_fss_timing.pio
+        ${CMAKE_CURRENT_LIST_DIR}/src/flexray_frame_gen_output.pio
+    )
+endif()
+
+# Runtime UART logging can block core0 long enough for the FlexRay DMA rings to
+# wrap under load. Keep stdio UART disabled in the streaming firmware.
+pico_enable_stdio_uart(pico_flexray 0)
 # The panda interface is a vendor-specific USB device, not a CDC (serial) device.
 # So we don't enable stdio_usb, but we will link the tinyusb_device library directly.
 # pico_enable_stdio_usb(pico_flexray 1)
 
 # Add the standard library to the build
 target_link_libraries(pico_flexray
-        hardware_spi
         hardware_gpio
         pico_stdlib
         tinyusb_device
@@ -75,6 +98,10 @@ target_link_libraries(pico_flexray
         hardware_pio
         hardware_interp
         pico_unique_id
+        pico_lwip_core
+        pico_lwip_core4
+        pico_lwip_netif
+        pico_lwip_arch
         )
 
 # Add the standard include files to the build
@@ -93,4 +120,3 @@ target_link_libraries(pico_flexray
         )
 
 pico_add_extra_outputs(pico_flexray)
-

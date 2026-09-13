@@ -3,6 +3,8 @@ import usb.util
 import time
 import sys
 import csv
+import queue
+import threading
 from datetime import datetime
 
 # Panda USB VID/PID
@@ -13,10 +15,54 @@ TARGET_ENDPOINT = 0x81
 CSV_BUFFER_SIZE = 1000  # Batch write to CSV every 1000 records
 
 # High-throughput tuning
-READ_SIZE = 65536  # Maximize bulk IN size to reduce per-call overhead
+READ_SIZE = 16384
+PIPELINED_READERS = 2  # Keep two Bulk-IN requests outstanding at all times
 RAW_BENCH_MODE = False  # When True, skip CSV and per-frame hex, only count FPS
 STATS_INTERVAL_SEC = 1.0   # How often to print a brief stats line
 MIN_BODY_LEN = 11  # src(1) + header(5) + crc24(3) + minimal payload(0)
+
+
+class PipelinedBulkReader:
+    """Keep multiple synchronous PyUSB reads in flight using worker threads."""
+
+    def __init__(self, dev, readers=PIPELINED_READERS):
+        self.dev = dev
+        self.results = queue.Queue(maxsize=256)
+        self.stop_event = threading.Event()
+        self.threads = [
+            threading.Thread(target=self._worker, daemon=True)
+            for _ in range(readers)
+        ]
+        for thread in self.threads:
+            thread.start()
+
+    def _put(self, item):
+        while not self.stop_event.is_set():
+            try:
+                self.results.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def _worker(self):
+        while not self.stop_event.is_set():
+            try:
+                data = bytes(self.dev.read(TARGET_ENDPOINT, READ_SIZE, timeout=1000))
+                if data:
+                    self._put(("data", data))
+            except usb.core.USBTimeoutError:
+                continue
+            except usb.core.USBError as error:
+                self._put(("error", error))
+                return
+
+    def get(self, timeout=1.1):
+        return self.results.get(timeout=timeout)
+
+    def stop(self):
+        self.stop_event.set()
+        for thread in self.threads:
+            thread.join(timeout=1.2)
 
 '''
 typedef struct
@@ -117,15 +163,18 @@ def read_and_parse_data_continuously(dev, csv_writer):
     sorted_frame_ids = []
     last_display_time = 0
     max_seen_payload_hex_len = len('Payload')
+    bulk_reader = PipelinedBulkReader(dev)
 
     try:
         while True:
             frames_found_in_batch = False
             try:
-                # Read data from endpoint
-                data = dev.read(TARGET_ENDPOINT, READ_SIZE, timeout=1000)  # type: ignore
+                kind, value = bulk_reader.get()
+                if kind == "error":
+                    raise value
+                data = value
                 if data:
-                    data_buffer += bytes(data)
+                    data_buffer += data
                     batch_timestamp = datetime.now().isoformat()
 
                     # Process data in buffer using variable-length records
@@ -173,18 +222,19 @@ def read_and_parse_data_continuously(dev, csv_writer):
                         print(f"Frames processed: {total_frames} | FPS(avg): {fps:.1f} | Unique IDs: {len(sorted_frame_ids)}")
                     last_display_time = current_time
                 
-            except usb.core.USBTimeoutError:
-                # Timeout is normal, continue trying
+            except queue.Empty:
                 continue
             except usb.core.USBError as e:
                 print(f"\nUSB error: {e}")
                 print("Device may have been disconnected, trying to reconnect...")
+                bulk_reader.stop()
                 dev = None
                 while dev is None:
                     time.sleep(1)
                     dev = find_usb_device()
                 if dev:
                     print("Device reconnected.")
+                    bulk_reader = PipelinedBulkReader(dev)
                 else:
                     print("Failed to reconnect device. Exiting.")
                     break
@@ -193,6 +243,7 @@ def read_and_parse_data_continuously(dev, csv_writer):
         print(f"\n\nUser interrupted")
         
     finally:
+        bulk_reader.stop()
         # Write any remaining rows in the buffer
         if csv_writer and csv_buffer:
             csv_writer.writerows(csv_buffer)

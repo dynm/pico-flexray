@@ -9,6 +9,8 @@
 #define PANDA_SET_IR_POWER              0xb0
 #define PANDA_SET_FAN_POWER             0xb1
 #define PANDA_GET_FAN_RPM               0xb2
+#define PANDA_FLEXRAY_INJECT_STATS      0xb3
+#define PANDA_FLEXRAY_INJECT_STATS_RESET 0xb4
 #define PANDA_RESET_CAN_COMMS           0xc0
 #define PANDA_GET_HW_TYPE               0xc1
 #define PANDA_GET_CAN_HEALTH_STATS      0xc2
@@ -66,7 +68,7 @@
 #define SAFETY_SUBARU               10
 #define SAFETY_MAZDA                11
 
-#define HEALTH_PACKET_VERSION 16
+#define HEALTH_PACKET_VERSION 0xBE6AD9D2u
 struct __attribute__((packed)) health_t {
     uint32_t uptime_pkt;
     uint32_t voltage_pkt;
@@ -93,7 +95,12 @@ struct __attribute__((packed)) health_t {
     uint16_t sbu1_voltage_mV;
     uint16_t sbu2_voltage_mV;
     uint8_t som_reset_triggered;
-  };
+    uint16_t sound_output_level_pkt;
+    uint8_t controls_allowed_lateral_pkt;
+    uint8_t controls_allowed_longitudinal_pkt;
+};
+
+_Static_assert(sizeof(struct health_t) == 61, "Panda health ABI must remain 61 bytes");
   
 #define CAN_HEALTH_PACKET_VERSION 5
 struct __attribute__((packed)) can_health_t {
@@ -127,6 +134,11 @@ struct __attribute__((packed)) can_health_t {
   
 void panda_usb_init(void);
 void panda_usb_task(void);
+
+// True while the host is actively completing Vendor Bulk-IN transfers. The
+// forwarding loop uses this to give Panda and UDP mutually exclusive access
+// to the Full-Speed USB bandwidth.
+bool panda_usb_vendor_stream_active(void);
 
 // FIFO management - now exposed for external use (e.g., main.c)
 bool panda_flexray_fifo_push(const flexray_frame_t *frame);

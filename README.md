@@ -1,124 +1,74 @@
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dynm/pico-flexray)
+# FlexRay inject / frame build demo
 
-### pico-flexray — Low Cost FlexRay MITM Module
-<img src="./imgs/pico-flexray.png" alt="pico-flexray module" width="600"/>
-<img src="./imgs/pico-flexray-bmw-g30.webp" alt="pico-flexray BMW G30 example" width="600"/>
-<img src="./imgs/openpilot-lateral-bmw-g30.webp" alt="OpenPilot BMW G30 example" width="600"/>
+Generic RP2350 FlexRay demo firmware extracted from the working implementation. It includes bridging, injection triggered by real frames, independent static frame generation, Panda USB and NCM/UDP interfaces, and an [interactive timing demo](web/flexray-demo/index.html). This branch is based on `main` and includes USB streaming fixes and USB NCM support alongside the generic injection and frame generation demo.
 
-A Raspberry Pi Pico-based FlexRay man-in-the-middle (MITM) bridge that forwards frames between ECU and vehicle transceivers, with a Panda-compatible USB interface.
+## Build
 
-- Core features:
-  - Continuous, bidirectional FlexRay frame forwarding (vehicle ↔ ECU)
-  - USB interface is Panda-compatible
-  - Man-in-the-middle bridge mode for FlexRay capture, forwarding, and injection workflows
+Requires Pico SDK 2.3.0, an RP2350 ARM toolchain, CMake, Ninja, and picotool 2.3.0 matching the SDK. The default board is `pico2_w`, running at 150 MHz.
 
-### Hardware connections
-1. For read-only FlexRay frame capture, connect a single transceiver to the vehicle’s bus, attach its BP/BM lines to the FlexRay lines in your vehicle.
-2. To differentiate frames from the ECU and the vehicle, use a man-in-the-middle (MITM) setup: split the original FlexRay cable and connect each half to its own transceiver with separate BP/BM pairs—one transceiver for the ECU side, one for the vehicle side.
-
-FR1/FR2 are the primary MITM pair. FR3/FR4 are an optional second pair; leaving FR3/FR4 unconnected does not affect normal FR1/FR2 operation.
-
-Refer to your board’s pinout for physical pad/header locations. Signals below use Pico GPIO numbers as configured in `src/main.c`.
-
-| GPIO | Signal | Direction | Side | Notes |
-|---:|---|---|---|---|
-| 2 | `BGE` | Output | Both | BGE to FlexRay transceivers (set High to enable)
-| 3 | `STBN` | Output | Both | STBN to transceivers (set High to exit standby)
-| 28 | `TXD_FR_1` | Output | FR1 | TXD to FR1 transceiver
-| 27 | `TXEN_FR_1` | Output | FR1 | TX_EN for FR1 transceiver
-| 26 | `RXD_FR_1` | Input | FR1 | RXD from FR1 transceiver
-| 4 | `TXD_FR_2` | Output | FR2 | TXD to FR2 transceiver
-| 5 | `TXEN_FR_2` | Output | FR2 | TX_EN for FR2 transceiver
-| 6 | `RXD_FR_2` | Input | FR2 | RXD from FR2 transceiver
-| 10 | `TXD_FR_3` | Output | FR3 | TXD to FR3 transceiver
-| 9 | `TXEN_FR_3` | Output | FR3 | TX_EN for FR3 transceiver
-| 8 | `RXD_FR_3` | Input | FR3 | RXD from FR3 transceiver
-| 16 | `TXD_FR_4` | Output | FR4 | TXD to FR4 transceiver
-| 22 | `TXEN_FR_4` | Output | FR4 | TX_EN for FR4 transceiver
-| 21 | `RXD_FR_4` | Input | FR4 | RXD from FR4 transceiver
-| 17 | `RELAY_FR_1_2` | Output | FR1/FR2 | Relay control for the FR1/FR2 pair
-| 18 | `RELAY_FR_3_4` | Output | FR3/FR4 | Relay control for the FR3/FR4 pair
-| 20 | `LED` | Output | Status | On-board/app status LED
-| 7 | `ISR` | Output | Measurement | Use a logic analyzer to measure the frame preparation time consumption.
-
-![Wiring diagram](imgs/wiring.png)
-**Note:**  
-You can use any FlexRay transceiver you have available. The following transceivers are pin-to-pin compatible and can be used interchangeably:
-- TLE9222
-- TJA1082
-- NCV7383
-
-
-### Build and flash
-
-```bash
-git clone https://github.com/dynm/pico-flexray/
-cd pico-flexray
+```sh
+cmake -S . -B build-on -G Ninja -DFLEXRAY_FRAME_GEN=ON
+cmake --build build-on
+cmake -S . -B build-off -G Ninja -DFLEXRAY_FRAME_GEN=OFF
+cmake --build build-off
 ```
 
-Option 1: Visual Studio Code
-1. Install the [Raspberry Pi Pico extension](https://marketplace.visualstudio.com/items?itemName=raspberry-pi.raspberry-pi-pico)
-2. Open this repo, do not enable RISC-V instructions
-3. Click the Pico extension tab on the left panel
-4. Click "Switch Board" and select your Pico board
-5. Hold BOOT, plug USB, then you can release BOOT
-6. Click "Run Project (USB)"
-7. Done!
+Each build directory contains `pico_flexray.uf2` and `pico_flexray.elf`. Set `PICO_SDK_PATH` and `PICO_TOOLCHAIN_PATH` for installations outside the default SDK paths. Use `picotool_DIR` to select a custom picotool installation.
 
-Option 2: Command line
-Prerequisites:
-- Raspberry Pi Pico SDK 2.1.x (env var `PICO_SDK_PATH` or the VS Code Pico extension auto-setup)
-- `picotool` for flashing, or UF2 drag-and-drop
+| Mode | Features | DMA channels |
+|---|---|---|
+| ON (default) | FR1/FR2 bridge + inject + FR2 frame build | 10 |
+| OFF | FR1..FR4 bridge + source identification and inject | 8 |
 
-Configure and build (default board is set in `CMakeLists.txt` to `pico2`):
+See [board_config.h](src/board_config.h) for pin definitions and [firmware modes](docs/firmware-modes.md) for resource allocation and wiring differences. All transmissions require assigned, non-overlapping TDMA slots.
 
-```bash
-cd pico-flexray
-mkdir build && cd build
-ninja -C build
+## USB streaming and NCM support
+
+Changes relative to `main` include:
+
+- Vendor USB batches multiple records per transfer, checks space for a complete record before writing, and removes a queued frame only after the complete write succeeds. The receive callback clears the mirrored TinyUSB RX FIFO after processing its buffer.
+- The USB device exposes both Panda Vendor and CDC-NCM interfaces. NCM connects to lwIP with DHCP on `192.168.7.0/24`, UDP streaming on port 5500, and injection/control on port 5501.
+- UDP streaming uses bounded micro-batches and a pending queue to absorb temporary NCM backpressure. The network output path does not block waiting for the host. An actively consumed Vendor stream takes priority to avoid competing for Full-Speed USB bandwidth.
+- A full capture FIFO evicts the oldest frame and counts the drop, retaining recent traffic. These changes reduce avoidable loss; bounded buffers do not guarantee lossless capture under sustained overload.
+
+The transport implementation is preserved from the validated demo snapshot. This history correction changes no firmware, client, test, or PIO source files.
+
+## Inject
+
+The synthetic example triggers on FID6 with `cycle & 3 == 2`, using a previously observed FID8 template. It replaces the first four payload bytes and preserves the remaining 14 bytes. A real header prepares the packet; a real frame-end callback authorizes DMA. The original injector follows the target frame edges and outputs to FR1 in ON mode or FR3 in OFF mode. The FlexRay cycle and frame CRC are updated.
+
+Each host override is consumed once and expires after 100 ms. Forwarding continues unchanged without fresh data. USB/UDP action `0x90` submits an entire 18-byte payload with one host transport CRC8 byte; `0x91` enables or disables injection. The transport CRC8 uses polynomial `0x1D`, initial value `0xF1`, and no final XOR.
+
+```sh
+python3 inject_demo_client.py --dry-run payload 000102030405060708090a0b0c0d0e0f1011
+python3 inject_demo_client.py enable
+python3 inject_demo_client.py payload 000102030405060708090a0b0c0d0e0f1011
+python3 inject_demo_client.py disable
 ```
 
-Artifacts are produced in `build/` (e.g., `pico_flexray.uf2`, `pico_flexray.elf`).
+The default NCM/UDP destination is `192.168.7.1:5501`. Use `--transport usb` for vendor USB, which requires `pyusb` and libusb. Actions do not acknowledge successful injection; verify actual output using captures or statistics.
 
-Flash to device:
-- UF2: Hold BOOT, plug USB, then copy `build/pico_flexray.uf2` to the RPI-RP2 mass storage device.
-- Picotool: put the board in BOOTSEL or use reset-to-boot, then:
+## Frame build
 
-```bash
-picotool load -f build/pico_flexray.uf2
+The implementation retains hardware FSS acquisition, fixed slot pacing, bounded phase correction, independent DMA, TXEN ownership, and echo exclusion. Defaults are FR2 FIDs `0xC/0xD`, 18-byte payloads, rep4/base3, `static_max_id=0x10`, and a 5 ms cycle. Frame generation starts disabled. Once enabled and synchronized, missing payload data selects a null frame at the same FSS deadline.
+
+```sh
+python3 frame_gen_client.py status
+python3 frame_gen_client.py enable
+python3 frame_gen_client.py payload --target-id 0xc --hex 000102030405060708090a0b0c0d0e0f1011
+python3 frame_gen_client.py disable
 ```
 
-Run-time:
-- USB enumerates as a vendor-specific device (no CDC serial). Use UART for logs.
-- On boot, the app prints pin assignments and status, enables transceivers, and starts forwarding.
+See [frame build actions](docs/frame-gen-actions.md) for payload commands and the `0x94/0x95` formats, and the [design notes](docs/frame-gen-design.md) for implementation details. Frame build and inject have independent switches and data paths.
 
-### Adjusting pins or board
+## Validation
 
-If you use a different board or wiring, update the GPIO defines at the top of `src/main.c` and/or modify set(PICO_BOARD pico2 CACHE STRING "Board type") in CMakeLists.txt. Rebuild and reflash.
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
 
-### Streaming with Cabana
+All 32 host tests and both ON/OFF firmware builds passed during extraction. ELF symbol checks passed for both modes; OFF excludes frame build. The demo JavaScript passed syntax checks. Browser interaction was not tested because the browser environment was unavailable.
 
-To visualize FlexRay data using Cabana:
+Tests cover the actual C controller, MITM integration with real IRQ callbacks in both modes, command expiry, payload byte preservation, static scheduling, null frames and CRCs, and PIO cycle simulation. The FlexRay PIO sources, streamer, frame build, and slot scheduler retain the implementation present at extraction.
 
-1. Clone the OpenPilot repository and switch to the FlexRay-enabled branch:
-   ```bash
-   git clone https://github.com/dynm/openpilot
-   cd openpilot
-   git checkout cabana-flexray
-   ```
-
-2. Set up the environment:
-   ```bash
-   ./tools/op.sh setup
-   ```
-
-3. Build Cabana:
-   ```bash
-   source .venv/bin/activate
-   scons -j$(nproc) tools/cabana/cabana
-   ```
-
-4. Launch Cabana:
-   ```bash
-   ./tools/cabana/cabana
-   ```
+This branch has not undergone renewed electrical bench validation. Builds and host simulation do not establish hardware timing. After flashing an RP2350 bench device, use `cold_reset`, then verify USB re-enumeration and DMA operation.
